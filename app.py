@@ -4,135 +4,164 @@ from __future__ import annotations
 
 import argparse
 import functools
-import os
 import html
-import pathlib
-import tarfile
+import os
 
-import deepdanbooru as dd
 import gradio as gr
 import huggingface_hub
 import numpy as np
-import PIL.Image
-import tensorflow as tf
+import onnxruntime as rt
+import pandas as pd
 import piexif
 import piexif.helper
+import PIL.Image
 
-TITLE = 'DeepDanbooru String'
+from Utils import dbimutils
 
-TOKEN = os.environ['TOKEN']
-MODEL_REPO = 'NoCrypt/DeepDanbooru_string'
-MODEL_FILENAME = 'model-resnet_custom_v3.h5'
-LABEL_FILENAME = 'tags.txt'
+TITLE = "WaifuDiffusion v1.4 Tags"
+DESCRIPTION = """
+Demo for [SmilingWolf/wd-v1-4-vit-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger) with "ready to copy" prompt and a prompt analyzer.
+
+Modified from [NoCrypt/DeepDanbooru_string](https://huggingface.co/spaces/NoCrypt/DeepDanbooru_string)  
+Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
+
+PNG Info code forked from [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
+"""
+
+HF_TOKEN = os.environ["HF_TOKEN"]
+MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger"
+MODEL_FILENAME = "ViTB16_11_07_2022_18h19m14s.onnx"
+LABEL_FILENAME = "selected_tags.csv"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--score-slider-step', type=float, default=0.05)
-    parser.add_argument('--score-threshold', type=float, default=0.5)
-    parser.add_argument('--theme', type=str, default='dark-grass')
-    parser.add_argument('--live', action='store_true')
-    parser.add_argument('--share', action='store_true')
-    parser.add_argument('--port', type=int)
-    parser.add_argument('--disable-queue',
-                        dest='enable_queue',
-                        action='store_false')
-    parser.add_argument('--allow-flagging', type=str, default='never')
+    parser.add_argument("--score-slider-step", type=float, default=0.05)
+    parser.add_argument("--score-threshold", type=float, default=0.35)
+    parser.add_argument("--share", action="store_true")
     return parser.parse_args()
 
 
-def load_sample_image_paths() -> list[pathlib.Path]:
-    image_dir = pathlib.Path('images')
-    if not image_dir.exists():
-        dataset_repo = 'hysts/sample-images-TADNE'
-        path = huggingface_hub.hf_hub_download(dataset_repo,
-                                               'images.tar.gz',
-                                               repo_type='dataset',
-                                               use_auth_token=TOKEN)
-        with tarfile.open(path) as f:
-            f.extractall()
-    return sorted(image_dir.glob('*'))
-
-
-def load_model() -> tf.keras.Model:
-    path = huggingface_hub.hf_hub_download(MODEL_REPO,
-                                           MODEL_FILENAME,
-                                           use_auth_token=TOKEN)
-    model = tf.keras.models.load_model(path)
+def load_model() -> rt.InferenceSession:
+    path = huggingface_hub.hf_hub_download(
+        MODEL_REPO, MODEL_FILENAME, use_auth_token=HF_TOKEN
+    )
+    model = rt.InferenceSession(path)
     return model
 
 
 def load_labels() -> list[str]:
-    path = huggingface_hub.hf_hub_download(MODEL_REPO,
-                                           LABEL_FILENAME,
-                                           use_auth_token=TOKEN)
-    with open(path) as f:
-        labels = [line.strip() for line in f.readlines()]
-    return labels
+    path = huggingface_hub.hf_hub_download(
+        MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
+    )
+    df = pd.read_csv(path)["name"].tolist()
+    return df
+
 
 def plaintext_to_html(text):
-    text = "<p>" + "<br>\n".join([f"{html.escape(x)}" for x in text.split('\n')]) + "</p>"
+    text = (
+        "<p>" + "<br>\n".join([f"{html.escape(x)}" for x in text.split("\n")]) + "</p>"
+    )
     return text
 
-def predict(image: PIL.Image.Image, score_threshold: float,
-            model: tf.keras.Model, labels: list[str]) -> dict[str, float]:
+
+def predict(
+    image: PIL.Image.Image,
+    score_threshold: float,
+    model: rt.InferenceSession,
+    labels: list[str],
+):
     rawimage = image
-    _, height, width, _ = model.input_shape
+    _, height, width, _ = model.get_inputs()[0].shape
+
+    # Alpha to white
+    image = image.convert("RGBA")
+    new_image = PIL.Image.new("RGBA", image.size, "WHITE")
+    new_image.paste(image, mask=image)
+    image = new_image.convert("RGB")
     image = np.asarray(image)
-    image = tf.image.resize(image,
-                            size=(height, width),
-                            method=tf.image.ResizeMethod.AREA,
-                            preserve_aspect_ratio=True)
-    image = image.numpy()
-    image = dd.image.transform_and_pad_image(image, width, height)
-    image = image / 255.
-    probs = model.predict(image[None, ...])[0]
-    probs = probs.astype(float)
-    res = dict()
-    for prob, label in zip(probs.tolist(), labels):
-        if prob < score_threshold:
-            continue
-        res[label] = prob
-    b = dict(sorted(res.items(),key=lambda item:item[1], reverse=True))
-    a = ', '.join(list(b.keys())).replace('_',' ').replace('(','\(').replace(')','\)')
-    c = ', '.join(list(b.keys()))
-    
+
+    # PIL RGB to OpenCV BGR
+    image = image[:, :, ::-1]
+
+    image = dbimutils.make_square(image, height)
+    image = dbimutils.smart_resize(image, height)
+    image = image.astype(np.float32)
+    image = np.expand_dims(image, 0)
+
+    input_name = model.get_inputs()[0].name
+    label_name = model.get_outputs()[0].name
+    probs = model.run([label_name], {input_name: image})[0]
+
+    labels = list(zip(labels, probs[0].astype(float)))
+
+    # First 4 labels are actually ratings: pick one with argmax
+    ratings_names = labels[:4]
+    rating = dict(ratings_names)
+
+    # Everything else is tags: pick any where prediction confidence > threshold
+    tags_names = labels[4:]
+    res = [x for x in tags_names if x[1] > score_threshold]
+    res = dict(res)
+
+    b = dict(sorted(res.items(), key=lambda item: item[1], reverse=True))
+    a = (
+        ", ".join(list(b.keys()))
+        .replace("_", " ")
+        .replace("(", "\(")
+        .replace(")", "\)")
+    )
+    c = ", ".join(list(b.keys()))
+
     items = rawimage.info
-    geninfo = ''
-    
+    geninfo = ""
+
     if "exif" in rawimage.info:
         exif = piexif.load(rawimage.info["exif"])
-        exif_comment = (exif or {}).get("Exif", {}).get(piexif.ExifIFD.UserComment, b'')
+        exif_comment = (exif or {}).get("Exif", {}).get(piexif.ExifIFD.UserComment, b"")
         try:
             exif_comment = piexif.helper.UserComment.load(exif_comment)
         except ValueError:
-            exif_comment = exif_comment.decode('utf8', errors="ignore")
-    
-        items['exif comment'] = exif_comment
+            exif_comment = exif_comment.decode("utf8", errors="ignore")
+
+        items["exif comment"] = exif_comment
         geninfo = exif_comment
-    
-        for field in ['jfif', 'jfif_version', 'jfif_unit', 'jfif_density', 'dpi', 'exif',
-                      'loop', 'background', 'timestamp', 'duration']:
+
+        for field in [
+            "jfif",
+            "jfif_version",
+            "jfif_unit",
+            "jfif_density",
+            "dpi",
+            "exif",
+            "loop",
+            "background",
+            "timestamp",
+            "duration",
+        ]:
             items.pop(field, None)
-    
-    geninfo = items.get('parameters', geninfo)
-    
+
+    geninfo = items.get("parameters", geninfo)
+
     info = f"""
 <p><h4>PNG Info</h4></p>    
 """
     for key, text in items.items():
-        info += f"""
+        info += (
+            f"""
 <div>
 <p><b>{plaintext_to_html(str(key))}</b></p>
 <p>{plaintext_to_html(str(text))}</p>
 </div>
-""".strip()+"\n"
-    
+""".strip()
+            + "\n"
+        )
+
     if len(info) == 0:
         message = "Nothing found in the image."
         info = f"<div><p>{message}<p></div>"
-    
-    return (a,c,res,info)
+
+    return (a, c, rating, res, info)
 
 
 def main():
@@ -141,45 +170,35 @@ def main():
     labels = load_labels()
 
     func = functools.partial(predict, model=model, labels=labels)
-    func = functools.update_wrapper(func, predict)
 
     gr.Interface(
-        func,
-        [
-            gr.inputs.Image(type='pil', label='Input'),
-            gr.inputs.Slider(0,
-                             1,
-                             step=args.score_slider_step,
-                             default=args.score_threshold,
-                             label='Score Threshold'),
+        fn=func,
+        inputs=[
+            gr.Image(type="pil", label="Input"),
+            gr.Slider(
+                0,
+                1,
+                step=args.score_slider_step,
+                value=args.score_threshold,
+                label="Score Threshold",
+            ),
         ],
-        [
-            gr.outputs.Textbox(label='Output (string)'), 
-            gr.outputs.Textbox(label='Output (raw string)'), 
-            gr.outputs.Label(label='Output (label)'),
-            gr.outputs.HTML()
+        outputs=[
+            gr.Textbox(label="Output (string)"),
+            gr.Textbox(label="Output (raw string)"),
+            gr.Label(label="Rating"),
+            gr.Label(label="Output (label)"),
+            gr.HTML(),
         ],
-        examples=[
-        ['miku.jpg',0.5],
-        ['miku2.jpg',0.5]
-        ],
+        examples=[["power.jpg", 0.5]],
         title=TITLE,
-        description='''
-Demo for [KichangKim/DeepDanbooru](https://github.com/KichangKim/DeepDanbooru) with "ready to copy" prompt and a prompt analyzer.
-
-Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
-
-PNG Info code forked from [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-        ''',
-        theme=args.theme,
-        allow_flagging=args.allow_flagging,
-        live=args.live,
+        description=DESCRIPTION,
+        allow_flagging="never",
     ).launch(
-        enable_queue=args.enable_queue,
-        server_port=args.port,
+        enable_queue=True,
         share=args.share,
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
