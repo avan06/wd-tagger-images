@@ -26,6 +26,8 @@ Modified from [NoCrypt/DeepDanbooru_string](https://huggingface.co/spaces/NoCryp
 Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
 
 PNG Info code forked from [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
+
+Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
 HF_TOKEN = os.environ["HF_TOKEN"]
