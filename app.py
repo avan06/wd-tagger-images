@@ -32,7 +32,7 @@ Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 
 HF_TOKEN = os.environ["HF_TOKEN"]
 MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger"
-MODEL_FILENAME = "ViTB16_11_07_2022_18h19m14s.onnx"
+MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
 
