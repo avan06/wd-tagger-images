@@ -4,7 +4,7 @@ emoji: 💬
 colorFrom: blue
 colorTo: red
 sdk: gradio
-sdk_version: 3.6
+sdk_version: 3.13
 app_file: app.py
 pinned: false
 duplicated_from: NoCrypt/DeepDanbooru_string

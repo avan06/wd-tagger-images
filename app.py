@@ -20,7 +20,7 @@ from Utils import dbimutils
 
 TITLE = "WaifuDiffusion v1.4 Tags"
 DESCRIPTION = """
-Demo for [SmilingWolf/wd-v1-4-vit-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger) with "ready to copy" prompt and a prompt analyzer.
+Demo for [SmilingWolf/wd-v1-4-vit-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger) and [SmilingWolf/wd-v1-4-convnext-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger) with "ready to copy" prompt and a prompt analyzer.
 
 Modified from [NoCrypt/DeepDanbooru_string](https://huggingface.co/spaces/NoCrypt/DeepDanbooru_string)  
 Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
@@ -31,7 +31,8 @@ Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
 HF_TOKEN = os.environ["HF_TOKEN"]
-MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger"
+VIT_MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger"
+CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger"
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
@@ -44,9 +45,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model() -> rt.InferenceSession:
+def load_model(model_repo: str, model_filename: str) -> rt.InferenceSession:
     path = huggingface_hub.hf_hub_download(
-        MODEL_REPO, MODEL_FILENAME, use_auth_token=HF_TOKEN
+        model_repo, model_filename, use_auth_token=HF_TOKEN
     )
     model = rt.InferenceSession(path)
     return model
@@ -54,7 +55,7 @@ def load_model() -> rt.InferenceSession:
 
 def load_labels() -> list[str]:
     path = huggingface_hub.hf_hub_download(
-        MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
+        VIT_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
     )
     df = pd.read_csv(path)["name"].tolist()
     return df
@@ -69,11 +70,14 @@ def plaintext_to_html(text):
 
 def predict(
     image: PIL.Image.Image,
+    selected_model: str,
     score_threshold: float,
-    model: rt.InferenceSession,
+    models: dict,
     labels: list[str],
 ):
     rawimage = image
+
+    model = models[selected_model]
     _, height, width, _ = model.get_inputs()[0].shape
 
     # Alpha to white
@@ -168,15 +172,19 @@ def predict(
 
 def main():
     args = parse_args()
-    model = load_model()
+    vit_model = load_model(VIT_MODEL_REPO, MODEL_FILENAME)
+    conv_model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
     labels = load_labels()
 
-    func = functools.partial(predict, model=model, labels=labels)
+    models = {"ViT": vit_model, "ConvNext": conv_model}
+
+    func = functools.partial(predict, models=models, labels=labels)
 
     gr.Interface(
         fn=func,
         inputs=[
             gr.Image(type="pil", label="Input"),
+            gr.Radio(["ViT", "ConvNext"], label="Model"),
             gr.Slider(
                 0,
                 1,
@@ -192,7 +200,7 @@ def main():
             gr.Label(label="Output (label)"),
             gr.HTML(),
         ],
-        examples=[["power.jpg", 0.5]],
+        examples=[["power.jpg", "ViT", 0.5]],
         title=TITLE,
         description=DESCRIPTION,
         allow_flagging="never",
