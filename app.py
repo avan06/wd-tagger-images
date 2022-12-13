@@ -184,7 +184,7 @@ def main():
         fn=func,
         inputs=[
             gr.Image(type="pil", label="Input"),
-            gr.Radio(["ViT", "ConvNext"], label="Model"),
+            gr.Radio(["ViT", "ConvNext"], value="ViT", label="Model"),
             gr.Slider(
                 0,
                 1,
