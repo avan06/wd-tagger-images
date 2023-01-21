@@ -253,7 +253,7 @@ def main():
             gr.Label(label="Output (tags)"),
             gr.HTML(),
         ],
-        examples=[["power.jpg", "SwinV2", 0.5]],
+        examples=[["power.jpg", "SwinV2", 0.35, 0.85]],
         title=TITLE,
         description=DESCRIPTION,
         allow_flagging="never",
