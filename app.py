@@ -215,8 +215,7 @@ def main():
 
     args = parse_args()
 
-    swin_model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
-    loaded_models["SwinV2"] = swin_model
+    change_model("SwinV2")
 
     tag_names, rating_indexes, general_indexes, character_indexes = load_labels()
 
