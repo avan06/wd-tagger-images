@@ -20,7 +20,12 @@ from Utils import dbimutils
 
 TITLE = "WaifuDiffusion v1.4 Tags"
 DESCRIPTION = """
-Demo for [SmilingWolf/wd-v1-4-vit-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger) and [SmilingWolf/wd-v1-4-convnext-tagger](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger) with "ready to copy" prompt and a prompt analyzer.
+Demo for:
+- [SmilingWolf/wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
+- [SmilingWolf/wd-v1-4-convnext-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
+- [SmilingWolf/wd-v1-4-vit-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger-v2)
+
+Includes "ready to copy" prompt and a prompt analyzer.
 
 Modified from [NoCrypt/DeepDanbooru_string](https://huggingface.co/spaces/NoCrypt/DeepDanbooru_string)  
 Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
@@ -31,8 +36,9 @@ Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
 HF_TOKEN = os.environ["HF_TOKEN"]
-VIT_MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger"
-CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger"
+SWIN_MODEL_REPO = "SmilingWolf/wd-v1-4-swinv2-tagger-v2"
+CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
+VIT_MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger-v2"
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
 
@@ -40,7 +46,8 @@ LABEL_FILENAME = "selected_tags.csv"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--score-slider-step", type=float, default=0.05)
-    parser.add_argument("--score-threshold", type=float, default=0.35)
+    parser.add_argument("--score-general-threshold", type=float, default=0.35)
+    parser.add_argument("--score-character-threshold", type=float, default=0.85)
     parser.add_argument("--share", action="store_true")
     return parser.parse_args()
 
@@ -53,12 +60,31 @@ def load_model(model_repo: str, model_filename: str) -> rt.InferenceSession:
     return model
 
 
+def change_model(model_name):
+    global loaded_models
+
+    if model_name == "SwinV2":
+        model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
+    elif model_name == "ConvNext":
+        model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
+    elif model_name == "ViT":
+        model = load_model(VIT_MODEL_REPO, MODEL_FILENAME)
+
+    loaded_models[model_name] = model
+    return loaded_models[model_name]
+
+
 def load_labels() -> list[str]:
     path = huggingface_hub.hf_hub_download(
-        VIT_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
+        SWIN_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
     )
-    df = pd.read_csv(path)["name"].tolist()
-    return df
+    df = pd.read_csv(path)
+
+    tag_names = df["name"].tolist()
+    rating_indexes = list(np.where(df["category"] == 9)[0])
+    general_indexes = list(np.where(df["category"] == 0)[0])
+    character_indexes = list(np.where(df["category"] == 4)[0])
+    return tag_names, rating_indexes, general_indexes, character_indexes
 
 
 def plaintext_to_html(text):
@@ -70,14 +96,22 @@ def plaintext_to_html(text):
 
 def predict(
     image: PIL.Image.Image,
-    selected_model: str,
-    score_threshold: float,
-    models: dict,
-    labels: list[str],
+    model_name: str,
+    general_threshold: float,
+    character_threshold: float,
+    tag_names: list[str],
+    rating_indexes: list[np.int64],
+    general_indexes: list[np.int64],
+    character_indexes: list[np.int64],
 ):
+    global loaded_models
+
     rawimage = image
 
-    model = models[selected_model]
+    model = loaded_models[model_name]
+    if model is None:
+        model = change_model(model_name)
+
     _, height, width, _ = model.get_inputs()[0].shape
 
     # Alpha to white
@@ -99,18 +133,23 @@ def predict(
     label_name = model.get_outputs()[0].name
     probs = model.run([label_name], {input_name: image})[0]
 
-    labels = list(zip(labels, probs[0].astype(float)))
+    labels = list(zip(tag_names, probs[0].astype(float)))
 
     # First 4 labels are actually ratings: pick one with argmax
-    ratings_names = labels[:4]
+    ratings_names = [labels[i] for i in rating_indexes]
     rating = dict(ratings_names)
 
-    # Everything else is tags: pick any where prediction confidence > threshold
-    tags_names = labels[4:]
-    res = [x for x in tags_names if x[1] > score_threshold]
-    res = dict(res)
+    # Then we have general tags: pick any where prediction confidence > threshold
+    general_names = [labels[i] for i in general_indexes]
+    general_res = [x for x in general_names if x[1] > general_threshold]
+    general_res = dict(general_res)
 
-    b = dict(sorted(res.items(), key=lambda item: item[1], reverse=True))
+    # Everything else is characters: pick any where prediction confidence > threshold
+    character_names = [labels[i] for i in character_indexes]
+    character_res = [x for x in character_names if x[1] > character_threshold]
+    character_res = dict(character_res)
+
+    b = dict(sorted(general_res.items(), key=lambda item: item[1], reverse=True))
     a = (
         ", ".join(list(b.keys()))
         .replace("_", " ")
@@ -167,40 +206,57 @@ def predict(
         message = "Nothing found in the image."
         info = f"<div><p>{message}<p></div>"
 
-    return (a, c, rating, res, info)
+    return (a, c, rating, character_res, general_res, info)
 
 
 def main():
+    global loaded_models
+    loaded_models = {"SwinV2": None, "ConvNext": None, "ViT": None}
+
     args = parse_args()
-    vit_model = load_model(VIT_MODEL_REPO, MODEL_FILENAME)
-    conv_model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
-    labels = load_labels()
 
-    models = {"ViT": vit_model, "ConvNext": conv_model}
+    swin_model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
+    loaded_models["SwinV2"] = swin_model
 
-    func = functools.partial(predict, models=models, labels=labels)
+    tag_names, rating_indexes, general_indexes, character_indexes = load_labels()
+
+    func = functools.partial(
+        predict,
+        tag_names=tag_names,
+        rating_indexes=rating_indexes,
+        general_indexes=general_indexes,
+        character_indexes=character_indexes,
+    )
 
     gr.Interface(
         fn=func,
         inputs=[
             gr.Image(type="pil", label="Input"),
-            gr.Radio(["ViT", "ConvNext"], value="ViT", label="Model"),
+            gr.Radio(["SwinV2", "ConvNext", "ViT"], value="SwinV2", label="Model"),
             gr.Slider(
                 0,
                 1,
                 step=args.score_slider_step,
-                value=args.score_threshold,
-                label="Score Threshold",
+                value=args.score_general_threshold,
+                label="General Tags Threshold",
+            ),
+            gr.Slider(
+                0,
+                1,
+                step=args.score_slider_step,
+                value=args.score_character_threshold,
+                label="Character Tags Threshold",
             ),
         ],
         outputs=[
             gr.Textbox(label="Output (string)"),
             gr.Textbox(label="Output (raw string)"),
             gr.Label(label="Rating"),
-            gr.Label(label="Output (label)"),
+            gr.Label(label="Output (characters)"),
+            gr.Label(label="Output (tags)"),
             gr.HTML(),
         ],
-        examples=[["power.jpg", "ViT", 0.5]],
+        examples=[["power.jpg", "SwinV2", 0.5]],
         title=TITLE,
         description=DESCRIPTION,
         allow_flagging="never",
