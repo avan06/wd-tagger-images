@@ -21,6 +21,7 @@ DESCRIPTION = """
 Demo for:
 - [SmilingWolf/wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
 - [SmilingWolf/wd-v1-4-convnext-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
+- [SmilingWolf/wd-v1-4-convnextv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnextv2-tagger-v2)
 - [SmilingWolf/wd-v1-4-vit-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger-v2)
 
 Includes "ready to copy" prompt and a prompt analyzer.
@@ -36,6 +37,7 @@ Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 HF_TOKEN = os.environ["HF_TOKEN"]
 SWIN_MODEL_REPO = "SmilingWolf/wd-v1-4-swinv2-tagger-v2"
 CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
+CONV2_MODEL_REPO = "SmilingWolf/wd-v1-4-convnextv2-tagger-v2"
 VIT_MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger-v2"
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
@@ -65,6 +67,8 @@ def change_model(model_name):
         model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
     elif model_name == "ConvNext":
         model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
+    elif model_name == "ConvNextV2":
+        model = load_model(CONV2_MODEL_REPO, MODEL_FILENAME)
     elif model_name == "ViT":
         model = load_model(VIT_MODEL_REPO, MODEL_FILENAME)
 
@@ -74,7 +78,7 @@ def change_model(model_name):
 
 def load_labels() -> list[str]:
     path = huggingface_hub.hf_hub_download(
-        SWIN_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
+        CONV2_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
     )
     df = pd.read_csv(path)
 
@@ -209,11 +213,11 @@ def predict(
 
 def main():
     global loaded_models
-    loaded_models = {"SwinV2": None, "ConvNext": None, "ViT": None}
+    loaded_models = {"SwinV2": None, "ConvNext": None, "ConvNextV2": None, "ViT": None}
 
     args = parse_args()
 
-    change_model("SwinV2")
+    change_model("ConvNextV2")
 
     tag_names, rating_indexes, general_indexes, character_indexes = load_labels()
 
@@ -229,7 +233,7 @@ def main():
         fn=func,
         inputs=[
             gr.Image(type="pil", label="Input"),
-            gr.Radio(["SwinV2", "ConvNext", "ViT"], value="SwinV2", label="Model"),
+            gr.Radio(["SwinV2", "ConvNext", "ConvNextV2", "ViT"], value="ConvNextV2", label="Model"),
             gr.Slider(
                 0,
                 1,
@@ -253,7 +257,7 @@ def main():
             gr.Label(label="Output (tags)"),
             gr.HTML(),
         ],
-        examples=[["power.jpg", "SwinV2", 0.35, 0.85]],
+        examples=[["power.jpg", "ConvNextV2", 0.35, 0.85]],
         title=TITLE,
         description=DESCRIPTION,
         allow_flagging="never",
