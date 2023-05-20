@@ -19,6 +19,7 @@ from Utils import dbimutils
 TITLE = "WaifuDiffusion v1.4 Tags"
 DESCRIPTION = """
 Demo for:
+- [SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2)
 - [SmilingWolf/wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
 - [SmilingWolf/wd-v1-4-convnext-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
 - [SmilingWolf/wd-v1-4-convnextv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnextv2-tagger-v2)
@@ -35,6 +36,7 @@ Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
 HF_TOKEN = os.environ["HF_TOKEN"]
+MOAT_MODEL_REPO = "SmilingWolf/wd-v1-4-moat-tagger-v2"
 SWIN_MODEL_REPO = "SmilingWolf/wd-v1-4-swinv2-tagger-v2"
 CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
 CONV2_MODEL_REPO = "SmilingWolf/wd-v1-4-convnextv2-tagger-v2"
@@ -63,7 +65,9 @@ def load_model(model_repo: str, model_filename: str) -> rt.InferenceSession:
 def change_model(model_name):
     global loaded_models
 
-    if model_name == "SwinV2":
+    if model_name == "MOAT":
+        model = load_model(MOAT_MODEL_REPO, MODEL_FILENAME)
+    elif model_name == "SwinV2":
         model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
     elif model_name == "ConvNext":
         model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
@@ -78,7 +82,7 @@ def change_model(model_name):
 
 def load_labels() -> list[str]:
     path = huggingface_hub.hf_hub_download(
-        CONV2_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
+        MOAT_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
     )
     df = pd.read_csv(path)
 
@@ -213,11 +217,17 @@ def predict(
 
 def main():
     global loaded_models
-    loaded_models = {"SwinV2": None, "ConvNext": None, "ConvNextV2": None, "ViT": None}
+    loaded_models = {
+        "MOAT": None,
+        "SwinV2": None,
+        "ConvNext": None,
+        "ConvNextV2": None,
+        "ViT": None,
+    }
 
     args = parse_args()
 
-    change_model("ConvNextV2")
+    change_model("MOAT")
 
     tag_names, rating_indexes, general_indexes, character_indexes = load_labels()
 
@@ -233,7 +243,11 @@ def main():
         fn=func,
         inputs=[
             gr.Image(type="pil", label="Input"),
-            gr.Radio(["SwinV2", "ConvNext", "ConvNextV2", "ViT"], value="ConvNextV2", label="Model"),
+            gr.Radio(
+                ["MOAT", "SwinV2", "ConvNext", "ConvNextV2", "ViT"],
+                value="MOAT",
+                label="Model",
+            ),
             gr.Slider(
                 0,
                 1,
@@ -257,7 +271,7 @@ def main():
             gr.Label(label="Output (tags)"),
             gr.HTML(),
         ],
-        examples=[["power.jpg", "ConvNextV2", 0.35, 0.85]],
+        examples=[["power.jpg", "MOAT", 0.35, 0.85]],
         title=TITLE,
         description=DESCRIPTION,
         allow_flagging="never",
