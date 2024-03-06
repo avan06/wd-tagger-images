@@ -247,7 +247,7 @@ def main():
                     image = gr.Image(type="pil", image_mode="RGBA", label="Input")
                     model_repo = gr.Dropdown(
                         dropdown_list,
-                        value=VIT_MODEL_DSV3_REPO,
+                        value=SWINV2_MODEL_DSV3_REPO,
                         label="Model",
                     )
                     with gr.Row():
@@ -320,7 +320,7 @@ def main():
         )
 
         gr.Examples(
-            [["power.jpg", VIT_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
+            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
             inputs=[
                 image,
                 model_repo,
