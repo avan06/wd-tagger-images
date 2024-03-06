@@ -1,13 +1,12 @@
 ---
-title: WaifuDiffusion v1.4 Tags
+title: WaifuDiffusion Tagger
 emoji: 💬
 colorFrom: blue
 colorTo: red
 sdk: gradio
-sdk_version: 3.16.2
+sdk_version: 4.20.1
 app_file: app.py
 pinned: false
-duplicated_from: NoCrypt/DeepDanbooru_string
 ---
 
 # Configuration

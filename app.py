@@ -1,8 +1,4 @@
-from __future__ import annotations
-
 import argparse
-import functools
-import html
 import os
 
 import gradio as gr
@@ -10,39 +6,55 @@ import huggingface_hub
 import numpy as np
 import onnxruntime as rt
 import pandas as pd
-import piexif
-import piexif.helper
-import PIL.Image
+from PIL import Image
 
-from Utils import dbimutils
-
-TITLE = "WaifuDiffusion v1.4 Tags"
+TITLE = "WaifuDiffusion Tagger"
 DESCRIPTION = """
-Demo for:
-- [SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2)
-- [SmilingWolf/wd-v1-4-swinv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
-- [SmilingWolf/wd-v1-4-convnext-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2)
-- [SmilingWolf/wd-v1-4-convnextv2-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-convnextv2-tagger-v2)
-- [SmilingWolf/wd-v1-4-vit-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-vit-tagger-v2)
-
-Includes "ready to copy" prompt and a prompt analyzer.
-
-Modified from [NoCrypt/DeepDanbooru_string](https://huggingface.co/spaces/NoCrypt/DeepDanbooru_string)  
-Modified from [hysts/DeepDanbooru](https://huggingface.co/spaces/hysts/DeepDanbooru)
-
-PNG Info code forked from [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
+Demo for the WaifuDiffusion tagger models
 
 Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
 HF_TOKEN = os.environ["HF_TOKEN"]
-MOAT_MODEL_REPO = "SmilingWolf/wd-v1-4-moat-tagger-v2"
-SWIN_MODEL_REPO = "SmilingWolf/wd-v1-4-swinv2-tagger-v2"
-CONV_MODEL_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
-CONV2_MODEL_REPO = "SmilingWolf/wd-v1-4-convnextv2-tagger-v2"
-VIT_MODEL_REPO = "SmilingWolf/wd-v1-4-vit-tagger-v2"
+
+# Dataset v3 series of models:
+SWINV2_MODEL_DSV3_REPO = "SmilingWolf/wd-swinv2-tagger-v3"
+CONV_MODEL_DSV3_REPO = "SmilingWolf/wd-convnext-tagger-v3"
+VIT_MODEL_DSV3_REPO = "SmilingWolf/wd-vit-tagger-v3"
+
+# Dataset v2 series of models:
+MOAT_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-moat-tagger-v2"
+SWIN_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-swinv2-tagger-v2"
+CONV_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
+CONV2_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-convnextv2-tagger-v2"
+VIT_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-vit-tagger-v2"
+
+# Files to download from the repos
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
+
+# https://github.com/toriato/stable-diffusion-webui-wd14-tagger/blob/a9eacb1eff904552d3012babfa28b57e1d3e295c/tagger/ui.py#L368
+kaomojis = [
+    "0_0",
+    "(o)_(o)",
+    "+_+",
+    "+_-",
+    "._.",
+    "<o>_<o>",
+    "<|>_<|>",
+    "=_=",
+    ">_<",
+    "3_3",
+    "6_9",
+    ">_o",
+    "@_@",
+    "^_^",
+    "o_o",
+    "u_u",
+    "x_x",
+    "|_|",
+    "||_||",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,231 +66,273 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_model(model_repo: str, model_filename: str) -> rt.InferenceSession:
-    path = huggingface_hub.hf_hub_download(
-        model_repo, model_filename, use_auth_token=HF_TOKEN
+def load_labels(dataframe) -> list[str]:
+    name_series = dataframe["name"]
+    name_series = name_series.map(
+        lambda x: x.replace("_", " ") if x not in kaomojis else x
     )
-    model = rt.InferenceSession(path)
-    return model
+    tag_names = name_series.tolist()
 
-
-def change_model(model_name):
-    global loaded_models
-
-    if model_name == "MOAT":
-        model = load_model(MOAT_MODEL_REPO, MODEL_FILENAME)
-    elif model_name == "SwinV2":
-        model = load_model(SWIN_MODEL_REPO, MODEL_FILENAME)
-    elif model_name == "ConvNext":
-        model = load_model(CONV_MODEL_REPO, MODEL_FILENAME)
-    elif model_name == "ConvNextV2":
-        model = load_model(CONV2_MODEL_REPO, MODEL_FILENAME)
-    elif model_name == "ViT":
-        model = load_model(VIT_MODEL_REPO, MODEL_FILENAME)
-
-    loaded_models[model_name] = model
-    return loaded_models[model_name]
-
-
-def load_labels() -> list[str]:
-    path = huggingface_hub.hf_hub_download(
-        MOAT_MODEL_REPO, LABEL_FILENAME, use_auth_token=HF_TOKEN
-    )
-    df = pd.read_csv(path)
-
-    tag_names = df["name"].tolist()
-    rating_indexes = list(np.where(df["category"] == 9)[0])
-    general_indexes = list(np.where(df["category"] == 0)[0])
-    character_indexes = list(np.where(df["category"] == 4)[0])
+    rating_indexes = list(np.where(dataframe["category"] == 9)[0])
+    general_indexes = list(np.where(dataframe["category"] == 0)[0])
+    character_indexes = list(np.where(dataframe["category"] == 4)[0])
     return tag_names, rating_indexes, general_indexes, character_indexes
 
 
-def plaintext_to_html(text):
-    text = (
-        "<p>" + "<br>\n".join([f"{html.escape(x)}" for x in text.split("\n")]) + "</p>"
-    )
-    return text
+def mcut_threshold(probs):
+    """
+    Maximum Cut Thresholding (MCut)
+    Largeron, C., Moulin, C., & Gery, M. (2012). MCut: A Thresholding Strategy
+     for Multi-label Classification. In 11th International Symposium, IDA 2012
+     (pp. 172-183).
+    """
+    sorted_probs = probs[probs.argsort()[::-1]]
+    difs = sorted_probs[:-1] - sorted_probs[1:]
+    t = difs.argmax()
+    thresh = (sorted_probs[t] + sorted_probs[t + 1]) / 2
+    return thresh
 
 
-def predict(
-    image: PIL.Image.Image,
-    model_name: str,
-    general_threshold: float,
-    character_threshold: float,
-    tag_names: list[str],
-    rating_indexes: list[np.int64],
-    general_indexes: list[np.int64],
-    character_indexes: list[np.int64],
-):
-    global loaded_models
+class Predictor:
+    def __init__(self):
+        self.model_target_size = None
+        self.last_loaded_repo = None
 
-    rawimage = image
+    def download_model(self, model_repo):
+        csv_path = huggingface_hub.hf_hub_download(
+            model_repo,
+            LABEL_FILENAME,
+            use_auth_token=HF_TOKEN,
+        )
+        model_path = huggingface_hub.hf_hub_download(
+            model_repo,
+            MODEL_FILENAME,
+            use_auth_token=HF_TOKEN,
+        )
+        return csv_path, model_path
 
-    model = loaded_models[model_name]
-    if model is None:
-        model = change_model(model_name)
+    def load_model(self, model_repo):
+        if model_repo == self.last_loaded_repo:
+            return
 
-    _, height, width, _ = model.get_inputs()[0].shape
+        csv_path, model_path = self.download_model(model_repo)
 
-    # Alpha to white
-    image = image.convert("RGBA")
-    new_image = PIL.Image.new("RGBA", image.size, "WHITE")
-    new_image.paste(image, mask=image)
-    image = new_image.convert("RGB")
-    image = np.asarray(image)
+        tags_df = pd.read_csv(csv_path)
+        sep_tags = load_labels(tags_df)
 
-    # PIL RGB to OpenCV BGR
-    image = image[:, :, ::-1]
+        self.tag_names = sep_tags[0]
+        self.rating_indexes = sep_tags[1]
+        self.general_indexes = sep_tags[2]
+        self.character_indexes = sep_tags[3]
 
-    image = dbimutils.make_square(image, height)
-    image = dbimutils.smart_resize(image, height)
-    image = image.astype(np.float32)
-    image = np.expand_dims(image, 0)
+        model = rt.InferenceSession(model_path)
+        _, height, width, _ = model.get_inputs()[0].shape
+        self.model_target_size = height
 
-    input_name = model.get_inputs()[0].name
-    label_name = model.get_outputs()[0].name
-    probs = model.run([label_name], {input_name: image})[0]
+        self.last_loaded_repo = model_path
+        self.model = model
 
-    labels = list(zip(tag_names, probs[0].astype(float)))
+    def prepare_image(self, image):
+        target_size = self.model_target_size
 
-    # First 4 labels are actually ratings: pick one with argmax
-    ratings_names = [labels[i] for i in rating_indexes]
-    rating = dict(ratings_names)
+        canvas = Image.new("RGBA", image.size, (255, 255, 255))
+        canvas.alpha_composite(image)
+        image = canvas.convert("RGB")
 
-    # Then we have general tags: pick any where prediction confidence > threshold
-    general_names = [labels[i] for i in general_indexes]
-    general_res = [x for x in general_names if x[1] > general_threshold]
-    general_res = dict(general_res)
+        # Pad image to square
+        image_shape = image.size
+        max_dim = max(image_shape)
+        pad_left = (max_dim - image_shape[0]) // 2
+        pad_top = (max_dim - image_shape[1]) // 2
 
-    # Everything else is characters: pick any where prediction confidence > threshold
-    character_names = [labels[i] for i in character_indexes]
-    character_res = [x for x in character_names if x[1] > character_threshold]
-    character_res = dict(character_res)
+        padded_image = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
+        padded_image.paste(image, (pad_left, pad_top))
 
-    b = dict(sorted(general_res.items(), key=lambda item: item[1], reverse=True))
-    a = (
-        ", ".join(list(b.keys()))
-        .replace("_", " ")
-        .replace("(", "\(")
-        .replace(")", "\)")
-    )
-    c = ", ".join(list(b.keys()))
+        # Resize
+        if max_dim != target_size:
+            padded_image = padded_image.resize(
+                (target_size, target_size),
+                Image.BICUBIC,
+            )
 
-    items = rawimage.info
-    geninfo = ""
+        # Convert to numpy array
+        image_array = np.asarray(padded_image, dtype=np.float32)
 
-    if "exif" in rawimage.info:
-        exif = piexif.load(rawimage.info["exif"])
-        exif_comment = (exif or {}).get("Exif", {}).get(piexif.ExifIFD.UserComment, b"")
-        try:
-            exif_comment = piexif.helper.UserComment.load(exif_comment)
-        except ValueError:
-            exif_comment = exif_comment.decode("utf8", errors="ignore")
+        # Convert PIL-native RGB to BGR
+        image_array = image_array[:, :, ::-1]
 
-        items["exif comment"] = exif_comment
-        geninfo = exif_comment
+        return np.expand_dims(image_array, axis=0)
 
-        for field in [
-            "jfif",
-            "jfif_version",
-            "jfif_unit",
-            "jfif_density",
-            "dpi",
-            "exif",
-            "loop",
-            "background",
-            "timestamp",
-            "duration",
-        ]:
-            items.pop(field, None)
+    def predict(
+        self,
+        image,
+        model_repo,
+        general_thresh,
+        general_mcut_enabled,
+        character_thresh,
+        character_mcut_enabled,
+    ):
+        self.load_model(model_repo)
 
-    geninfo = items.get("parameters", geninfo)
+        image = self.prepare_image(image)
 
-    info = f"""
-<p><h4>PNG Info</h4></p>    
-"""
-    for key, text in items.items():
-        info += (
-            f"""
-<div>
-<p><b>{plaintext_to_html(str(key))}</b></p>
-<p>{plaintext_to_html(str(text))}</p>
-</div>
-""".strip()
-            + "\n"
+        input_name = self.model.get_inputs()[0].name
+        label_name = self.model.get_outputs()[0].name
+        preds = self.model.run([label_name], {input_name: image})[0]
+
+        labels = list(zip(self.tag_names, preds[0].astype(float)))
+
+        # First 4 labels are actually ratings: pick one with argmax
+        ratings_names = [labels[i] for i in self.rating_indexes]
+        rating = dict(ratings_names)
+
+        # Then we have general tags: pick any where prediction confidence > threshold
+        general_names = [labels[i] for i in self.general_indexes]
+
+        if general_mcut_enabled:
+            general_probs = np.array([x[1] for x in general_names])
+            general_thresh = mcut_threshold(general_probs)
+
+        general_res = [x for x in general_names if x[1] > general_thresh]
+        general_res = dict(general_res)
+
+        # Everything else is characters: pick any where prediction confidence > threshold
+        character_names = [labels[i] for i in self.character_indexes]
+
+        if character_mcut_enabled:
+            character_probs = np.array([x[1] for x in character_names])
+            character_thresh = mcut_threshold(character_probs)
+            character_thresh = max(0.15, character_thresh)
+
+        character_res = [x for x in character_names if x[1] > character_thresh]
+        character_res = dict(character_res)
+
+        sorted_general_strings = sorted(
+            general_res.items(),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        sorted_general_strings = [x[0] for x in sorted_general_strings]
+        sorted_general_strings = (
+            ", ".join(sorted_general_strings).replace("(", "\(").replace(")", "\)")
         )
 
-    if len(info) == 0:
-        message = "Nothing found in the image."
-        info = f"<div><p>{message}<p></div>"
-
-    return (a, c, rating, character_res, general_res, info)
+        return sorted_general_strings, rating, character_res, general_res
 
 
 def main():
-    global loaded_models
-    loaded_models = {
-        "MOAT": None,
-        "SwinV2": None,
-        "ConvNext": None,
-        "ConvNextV2": None,
-        "ViT": None,
-    }
-
     args = parse_args()
 
-    change_model("MOAT")
+    predictor = Predictor()
 
-    tag_names, rating_indexes, general_indexes, character_indexes = load_labels()
+    dropdown_list = [
+        SWINV2_MODEL_DSV3_REPO,
+        CONV_MODEL_DSV3_REPO,
+        VIT_MODEL_DSV3_REPO,
+        MOAT_MODEL_DSV2_REPO,
+        SWIN_MODEL_DSV2_REPO,
+        CONV_MODEL_DSV2_REPO,
+        CONV2_MODEL_DSV2_REPO,
+        VIT_MODEL_DSV2_REPO,
+    ]
 
-    func = functools.partial(
-        predict,
-        tag_names=tag_names,
-        rating_indexes=rating_indexes,
-        general_indexes=general_indexes,
-        character_indexes=character_indexes,
-    )
+    with gr.Blocks(title=TITLE) as demo:
+        with gr.Column():
+            gr.Markdown(
+                value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
+            )
+            gr.Markdown(value=DESCRIPTION)
+            with gr.Row():
+                with gr.Column(variant="panel"):
+                    image = gr.Image(type="pil", image_mode="RGBA", label="Input")
+                    model_repo = gr.Dropdown(
+                        dropdown_list,
+                        value=VIT_MODEL_DSV3_REPO,
+                        label="Model",
+                    )
+                    with gr.Row():
+                        general_thresh = gr.Slider(
+                            0,
+                            1,
+                            step=args.score_slider_step,
+                            value=args.score_general_threshold,
+                            label="General Tags Threshold",
+                            scale=3,
+                        )
+                        general_mcut_enabled = gr.Checkbox(
+                            value=False,
+                            label="Use MCut threshold",
+                            scale=1,
+                        )
+                    with gr.Row():
+                        character_thresh = gr.Slider(
+                            0,
+                            1,
+                            step=args.score_slider_step,
+                            value=args.score_character_threshold,
+                            label="Character Tags Threshold",
+                            scale=3,
+                        )
+                        character_mcut_enabled = gr.Checkbox(
+                            value=False,
+                            label="Use MCut threshold",
+                            scale=1,
+                        )
+                    with gr.Row():
+                        clear = gr.ClearButton(
+                            components=[
+                                image,
+                                model_repo,
+                                general_thresh,
+                                general_mcut_enabled,
+                                character_thresh,
+                                character_mcut_enabled,
+                            ],
+                            variant="secondary",
+                            size="lg",
+                        )
+                        submit = gr.Button(value="Submit", variant="primary", size="lg")
+                with gr.Column(variant="panel"):
+                    sorted_general_strings = gr.Textbox(label="Output (string)")
+                    rating = gr.Label(label="Rating")
+                    character_res = gr.Label(label="Output (characters)")
+                    general_res = gr.Label(label="Output (tags)")
+                    clear.add(
+                        [
+                            sorted_general_strings,
+                            rating,
+                            character_res,
+                            general_res,
+                        ]
+                    )
 
-    gr.Interface(
-        fn=func,
-        inputs=[
-            gr.Image(type="pil", label="Input"),
-            gr.Radio(
-                ["MOAT", "SwinV2", "ConvNext", "ConvNextV2", "ViT"],
-                value="MOAT",
-                label="Model",
-            ),
-            gr.Slider(
-                0,
-                1,
-                step=args.score_slider_step,
-                value=args.score_general_threshold,
-                label="General Tags Threshold",
-            ),
-            gr.Slider(
-                0,
-                1,
-                step=args.score_slider_step,
-                value=args.score_character_threshold,
-                label="Character Tags Threshold",
-            ),
-        ],
-        outputs=[
-            gr.Textbox(label="Output (string)"),
-            gr.Textbox(label="Output (raw string)"),
-            gr.Label(label="Rating"),
-            gr.Label(label="Output (characters)"),
-            gr.Label(label="Output (tags)"),
-            gr.HTML(),
-        ],
-        examples=[["power.jpg", "MOAT", 0.35, 0.85]],
-        title=TITLE,
-        description=DESCRIPTION,
-        allow_flagging="never",
-    ).launch(
-        enable_queue=True,
-        share=args.share,
-    )
+        submit.click(
+            predictor.predict,
+            inputs=[
+                image,
+                model_repo,
+                general_thresh,
+                general_mcut_enabled,
+                character_thresh,
+                character_mcut_enabled,
+            ],
+            outputs=[sorted_general_strings, rating, character_res, general_res],
+        )
+
+        gr.Examples(
+            [["power.jpg", VIT_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
+            inputs=[
+                image,
+                model_repo,
+                general_thresh,
+                general_mcut_enabled,
+                character_thresh,
+                character_mcut_enabled,
+            ],
+        )
+
+    demo.queue(max_size=10)
+    demo.launch()
 
 
 if __name__ == "__main__":
