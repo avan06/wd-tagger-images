@@ -129,7 +129,7 @@ class Predictor:
         _, height, width, _ = model.get_inputs()[0].shape
         self.model_target_size = height
 
-        self.last_loaded_repo = model_path
+        self.last_loaded_repo = model_repo
         self.model = model
 
     def prepare_image(self, image):
