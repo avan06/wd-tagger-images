@@ -15,13 +15,12 @@ Demo for the WaifuDiffusion tagger models
 Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 """
 
-HF_TOKEN = os.environ["HF_TOKEN"]
-
 # Dataset v3 series of models:
 SWINV2_MODEL_DSV3_REPO = "SmilingWolf/wd-swinv2-tagger-v3"
 CONV_MODEL_DSV3_REPO = "SmilingWolf/wd-convnext-tagger-v3"
 VIT_MODEL_DSV3_REPO = "SmilingWolf/wd-vit-tagger-v3"
 VIT_LARGE_MODEL_DSV3_REPO = "SmilingWolf/wd-vit-large-tagger-v3"
+EVA02_LARGE_MODEL_DSV3_REPO = "SmilingWolf/wd-eva02-large-tagger-v3"
 
 # Dataset v2 series of models:
 MOAT_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-moat-tagger-v2"
@@ -231,6 +230,7 @@ def main():
         CONV_MODEL_DSV3_REPO,
         VIT_MODEL_DSV3_REPO,
         VIT_LARGE_MODEL_DSV3_REPO,
+        EVA02_LARGE_MODEL_DSV3_REPO,
         MOAT_MODEL_DSV2_REPO,
         SWIN_MODEL_DSV2_REPO,
         CONV_MODEL_DSV2_REPO,
