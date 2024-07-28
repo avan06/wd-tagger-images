@@ -102,12 +102,10 @@ class Predictor:
         csv_path = huggingface_hub.hf_hub_download(
             model_repo,
             LABEL_FILENAME,
-            use_auth_token=HF_TOKEN,
         )
         model_path = huggingface_hub.hf_hub_download(
             model_repo,
             MODEL_FILENAME,
-            use_auth_token=HF_TOKEN,
         )
         return csv_path, model_path
 
