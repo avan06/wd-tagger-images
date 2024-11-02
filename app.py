@@ -7,6 +7,10 @@ import numpy as np
 import onnxruntime as rt
 import pandas as pd
 from PIL import Image
+import traceback
+import tempfile
+import zipfile
+from datetime import datetime
 
 TITLE = "WaifuDiffusion Tagger"
 DESCRIPTION = """
@@ -55,6 +59,8 @@ kaomojis = [
     "|_|",
     "||_||",
 ]
+
+tag_results = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,7 +136,9 @@ class Predictor:
         self.last_loaded_repo = model_repo
         self.model = model
 
-    def prepare_image(self, image):
+    def prepare_image(self, path):
+        image = Image.open(path)
+        image = image.convert("RGBA")
         target_size = self.model_target_size
 
         canvas = Image.new("RGBA", image.size, (255, 255, 255))
@@ -161,61 +169,149 @@ class Predictor:
 
         return np.expand_dims(image_array, axis=0)
 
+    def create_file(self, text: str, directory: str, fileName: str) -> str:
+        # Write the text to a file
+        with open(os.path.join(directory, fileName), 'w+', encoding="utf-8") as file:
+            file.write(text)
+
+        return file.name
+
     def predict(
         self,
-        image,
+        gallery,
         model_repo,
         general_thresh,
         general_mcut_enabled,
         character_thresh,
         character_mcut_enabled,
+        characters_merge_enabled,
+        additional_tags_prepend,
+        additional_tags_append,
     ):
         self.load_model(model_repo)
+        # Result
+        txt_infos = []
+        output_dir = tempfile.mkdtemp()
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
-        image = self.prepare_image(image)
+        sorted_general_strings = ""
+        rating = None
+        character_res = None
+        general_res = None
 
-        input_name = self.model.get_inputs()[0].name
-        label_name = self.model.get_outputs()[0].name
-        preds = self.model.run([label_name], {input_name: image})[0]
+        tag_results.clear()
 
-        labels = list(zip(self.tag_names, preds[0].astype(float)))
+        prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
+        append_list = [tag.strip() for tag in additional_tags_append.split(",") if tag.strip()]
+        if prepend_list and append_list:
+            append_list = [item for item in append_list if item not in prepend_list]
 
-        # First 4 labels are actually ratings: pick one with argmax
-        ratings_names = [labels[i] for i in self.rating_indexes]
-        rating = dict(ratings_names)
+        for idx, value in enumerate(gallery):
+            try:
+                image_path = value[0]
+                image_name = os.path.splitext(os.path.basename(image_path))[0]
 
-        # Then we have general tags: pick any where prediction confidence > threshold
-        general_names = [labels[i] for i in self.general_indexes]
+                image = self.prepare_image(image_path)
 
-        if general_mcut_enabled:
-            general_probs = np.array([x[1] for x in general_names])
-            general_thresh = mcut_threshold(general_probs)
+                input_name = self.model.get_inputs()[0].name
+                label_name = self.model.get_outputs()[0].name
+                preds = self.model.run([label_name], {input_name: image})[0]
 
-        general_res = [x for x in general_names if x[1] > general_thresh]
-        general_res = dict(general_res)
+                labels = list(zip(self.tag_names, preds[0].astype(float)))
 
-        # Everything else is characters: pick any where prediction confidence > threshold
-        character_names = [labels[i] for i in self.character_indexes]
+                # First 4 labels are actually ratings: pick one with argmax
+                ratings_names = [labels[i] for i in self.rating_indexes]
+                rating = dict(ratings_names)
 
-        if character_mcut_enabled:
-            character_probs = np.array([x[1] for x in character_names])
-            character_thresh = mcut_threshold(character_probs)
-            character_thresh = max(0.15, character_thresh)
+                # Then we have general tags: pick any where prediction confidence > threshold
+                general_names = [labels[i] for i in self.general_indexes]
 
-        character_res = [x for x in character_names if x[1] > character_thresh]
-        character_res = dict(character_res)
+                if general_mcut_enabled:
+                    general_probs = np.array([x[1] for x in general_names])
+                    general_thresh = mcut_threshold(general_probs)
 
-        sorted_general_strings = sorted(
-            general_res.items(),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        sorted_general_strings = [x[0] for x in sorted_general_strings]
-        sorted_general_strings = (
-            ", ".join(sorted_general_strings).replace("(", "\(").replace(")", "\)")
-        )
+                general_res = [x for x in general_names if x[1] > general_thresh]
+                general_res = dict(general_res)
 
-        return sorted_general_strings, rating, character_res, general_res
+                # Everything else is characters: pick any where prediction confidence > threshold
+                character_names = [labels[i] for i in self.character_indexes]
+
+                if character_mcut_enabled:
+                    character_probs = np.array([x[1] for x in character_names])
+                    character_thresh = mcut_threshold(character_probs)
+                    character_thresh = max(0.15, character_thresh)
+
+                character_res = [x for x in character_names if x[1] > character_thresh]
+                character_res = dict(character_res)
+                character_list = list(character_res.keys())
+
+                sorted_general_list = sorted(
+                    general_res.items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+                sorted_general_list = [x[0] for x in sorted_general_list]
+                #Remove values from character_list that already exist in sorted_general_list
+                character_list = [item for item in character_list if item not in sorted_general_list]
+                #Remove values from sorted_general_list that already exist in prepend_list or append_list
+                if prepend_list:
+                    sorted_general_list = [item for item in sorted_general_list if item not in prepend_list]
+                if append_list:
+                    sorted_general_list = [item for item in sorted_general_list if item not in append_list]
+
+                sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + prepend_list + sorted_general_list + append_list).replace("(", "\(").replace(")", "\)")
+
+                txt_file = self.create_file(sorted_general_strings, output_dir, image_name + ".txt")
+                txt_infos.append({"path":txt_file, "name": image_name + ".txt"})
+
+                tag_results[image_path] = { "strings": sorted_general_strings, "rating": rating, "character_res": character_res, "general_res": general_res }
+
+            except Exception as e:
+                print(traceback.format_exc())
+                print("Error predict: " + str(e))
+
+        # Result
+        download = []
+        if txt_infos is not None and len(txt_infos) > 0:
+            downloadZipPath = os.path.join(output_dir, "images-tagger-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".zip")
+            with zipfile.ZipFile(downloadZipPath, 'w', zipfile.ZIP_DEFLATED) as taggers_zip:
+                for info in txt_infos:
+                    # Get file name from lookup
+                    taggers_zip.write(info["path"], arcname=info["name"])
+            download.append(downloadZipPath)
+
+        return download, sorted_general_strings, rating, character_res, general_res
+    
+def get_selection_from_gallery(gallery: list, selected_state: gr.SelectData):
+    if not selected_state:
+        return selected_state
+
+    tag_result = { "strings": "", "rating": "", "character_res": "", "general_res": "" }
+    if selected_state.value["image"]["path"] in tag_results:
+        tag_result = tag_results[selected_state.value["image"]["path"]]
+
+    return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], tag_result["rating"], tag_result["character_res"], tag_result["general_res"]
+
+def add_images_to_gallery(gallery: list, images):
+    if gallery is None:
+        gallery = []
+    if not images:
+        return gallery
+    
+    # Combine the new images with the existing gallery images
+    gallery.extend(images)
+    return gallery
+
+def remove_image_from_gallery(gallery: list, selected_image: str):
+    if not gallery or not selected_image:
+        return gallery
+
+    selected_image = eval(selected_image)
+    # Remove the selected image from the gallery
+    if selected_image in gallery:
+        gallery.remove(selected_image)
+    return gallery
 
 
 def main():
@@ -225,10 +321,10 @@ def main():
 
     dropdown_list = [
         SWINV2_MODEL_DSV3_REPO,
+        EVA02_LARGE_MODEL_DSV3_REPO,
         CONV_MODEL_DSV3_REPO,
         VIT_MODEL_DSV3_REPO,
         VIT_LARGE_MODEL_DSV3_REPO,
-        EVA02_LARGE_MODEL_DSV3_REPO,
         MOAT_MODEL_DSV2_REPO,
         SWIN_MODEL_DSV2_REPO,
         CONV_MODEL_DSV2_REPO,
@@ -244,7 +340,14 @@ def main():
             gr.Markdown(value=DESCRIPTION)
             with gr.Row():
                 with gr.Column(variant="panel"):
-                    image = gr.Image(type="pil", image_mode="RGBA", label="Input")
+                    with gr.Row():
+                        submit = gr.Button(value="Submit", variant="primary", size="lg")
+                    with gr.Row():
+                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Input")
+                    with gr.Row():
+                        upload_button = gr.UploadButton("Upload Images", file_types=["image"], file_count="multiple", size="sm")
+                        remove_button = gr.Button("Remove Selected Image", size="sm")
+
                     model_repo = gr.Dropdown(
                         dropdown_list,
                         value=SWINV2_MODEL_DSV3_REPO,
@@ -279,26 +382,39 @@ def main():
                             scale=1,
                         )
                     with gr.Row():
+                        characters_merge_enabled = gr.Checkbox(
+                            value=True,
+                            label="Merge characters into the string output",
+                            scale=1,
+                        )
+                    with gr.Row():
+                        additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
+                        additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
+                    with gr.Row():
                         clear = gr.ClearButton(
                             components=[
-                                image,
+                                gallery,
                                 model_repo,
                                 general_thresh,
                                 general_mcut_enabled,
                                 character_thresh,
                                 character_mcut_enabled,
+                                characters_merge_enabled,
+                                additional_tags_prepend,
+                                additional_tags_append,
                             ],
                             variant="secondary",
                             size="lg",
                         )
-                        submit = gr.Button(value="Submit", variant="primary", size="lg")
                 with gr.Column(variant="panel"):
-                    sorted_general_strings = gr.Textbox(label="Output (string)")
+                    download_file = gr.File(label="Output (Download)")
+                    sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True)
                     rating = gr.Label(label="Rating")
                     character_res = gr.Label(label="Output (characters)")
                     general_res = gr.Label(label="Output (tags)")
                     clear.add(
                         [
+                            download_file,
                             sorted_general_strings,
                             rating,
                             character_res,
@@ -306,33 +422,47 @@ def main():
                         ]
                     )
 
+                # When the upload button is clicked, add the new images to the gallery
+                upload_button.upload(add_images_to_gallery, inputs=[gallery, upload_button], outputs=gallery)
+                # Event to update the selected image when an image is clicked in the gallery
+                selected_image = gr.Textbox(label="Selected Image", visible=False)
+                gallery.select(get_selection_from_gallery, inputs=gallery, outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
+                # Event to remove a selected image from the gallery
+                remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
+
         submit.click(
             predictor.predict,
             inputs=[
-                image,
+                gallery,
                 model_repo,
                 general_thresh,
                 general_mcut_enabled,
                 character_thresh,
                 character_mcut_enabled,
+                characters_merge_enabled,
+                additional_tags_prepend,
+                additional_tags_append,
             ],
-            outputs=[sorted_general_strings, rating, character_res, general_res],
+            outputs=[download_file, sorted_general_strings, rating, character_res, general_res],
         )
-
-        gr.Examples(
-            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
-            inputs=[
-                image,
-                model_repo,
-                general_thresh,
-                general_mcut_enabled,
-                character_thresh,
-                character_mcut_enabled,
-            ],
-        )
+        
+        # gr.Examples(
+        #     [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]], 
+        #     inputs=[
+        #         gallery,
+        #         model_repo,
+        #         general_thresh,
+        #         general_mcut_enabled,
+        #         character_thresh,
+        #         character_mcut_enabled,
+        #         characters_merge_enabled,
+        #         additional_tags_prepend,
+        #         additional_tags_append,
+        #     ],
+        # )
 
     demo.queue(max_size=10)
-    demo.launch()
+    demo.launch(inbrowser=True)
 
 
 if __name__ == "__main__":
