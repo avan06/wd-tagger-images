@@ -33,6 +33,10 @@ CONV_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
 CONV2_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-convnextv2-tagger-v2"
 VIT_MODEL_DSV2_REPO = "SmilingWolf/wd-v1-4-vit-tagger-v2"
 
+# IdolSankaku series of models:
+EVA02_LARGE_MODEL_IS_DSV1_REPO = "deepghs/idolsankaku-eva02-large-tagger-v1"
+SWINV2_MODEL_IS_DSV1_REPO = "deepghs/idolsankaku-swinv2-tagger-v1"
+
 # Files to download from the repos
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
@@ -300,7 +304,10 @@ def add_images_to_gallery(gallery: list, images):
         return gallery
     
     # Combine the new images with the existing gallery images
-    gallery.extend(images)
+    if type(images) is str:
+        gallery.append(images)
+    else:
+        gallery.extend(images)
     return gallery
 
 def remove_image_from_gallery(gallery: list, selected_image: str):
@@ -320,115 +327,122 @@ def main():
     predictor = Predictor()
 
     dropdown_list = [
-        SWINV2_MODEL_DSV3_REPO,
         EVA02_LARGE_MODEL_DSV3_REPO,
+        SWINV2_MODEL_DSV3_REPO,
         CONV_MODEL_DSV3_REPO,
         VIT_MODEL_DSV3_REPO,
         VIT_LARGE_MODEL_DSV3_REPO,
+        # ---
         MOAT_MODEL_DSV2_REPO,
         SWIN_MODEL_DSV2_REPO,
         CONV_MODEL_DSV2_REPO,
         CONV2_MODEL_DSV2_REPO,
         VIT_MODEL_DSV2_REPO,
+        # ---
+        SWINV2_MODEL_IS_DSV1_REPO,
+        EVA02_LARGE_MODEL_IS_DSV1_REPO,
     ]
 
     with gr.Blocks(title=TITLE) as demo:
-        with gr.Column():
-            gr.Markdown(
-                value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
-            )
-            gr.Markdown(value=DESCRIPTION)
-            with gr.Row():
+        gr.Markdown(
+            value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
+        )
+        gr.Markdown(value=DESCRIPTION)
+        with gr.Row():
+            with gr.Column():
+                submit = gr.Button(value="Submit", variant="primary", size="lg")
                 with gr.Column(variant="panel"):
+                    # Create an Image component for uploading images
+                    image_input = gr.Image(label="Upload an Image or clicking paste from clipboard button", type="filepath", sources=["upload", "clipboard"], height=150)
+                    gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
                     with gr.Row():
-                        submit = gr.Button(value="Submit", variant="primary", size="lg")
-                    with gr.Row():
-                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Input")
-                    with gr.Row():
-                        upload_button = gr.UploadButton("Upload Images", file_types=["image"], file_count="multiple", size="sm")
+                        upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
                         remove_button = gr.Button("Remove Selected Image", size="sm")
 
-                    model_repo = gr.Dropdown(
-                        dropdown_list,
-                        value=SWINV2_MODEL_DSV3_REPO,
-                        label="Model",
+                model_repo = gr.Dropdown(
+                    dropdown_list,
+                    value=SWINV2_MODEL_DSV3_REPO,
+                    label="Model",
+                )
+                with gr.Row():
+                    general_thresh = gr.Slider(
+                        0,
+                        1,
+                        step=args.score_slider_step,
+                        value=args.score_general_threshold,
+                        label="General Tags Threshold",
+                        scale=3,
                     )
-                    with gr.Row():
-                        general_thresh = gr.Slider(
-                            0,
-                            1,
-                            step=args.score_slider_step,
-                            value=args.score_general_threshold,
-                            label="General Tags Threshold",
-                            scale=3,
-                        )
-                        general_mcut_enabled = gr.Checkbox(
-                            value=False,
-                            label="Use MCut threshold",
-                            scale=1,
-                        )
-                    with gr.Row():
-                        character_thresh = gr.Slider(
-                            0,
-                            1,
-                            step=args.score_slider_step,
-                            value=args.score_character_threshold,
-                            label="Character Tags Threshold",
-                            scale=3,
-                        )
-                        character_mcut_enabled = gr.Checkbox(
-                            value=False,
-                            label="Use MCut threshold",
-                            scale=1,
-                        )
-                    with gr.Row():
-                        characters_merge_enabled = gr.Checkbox(
-                            value=True,
-                            label="Merge characters into the string output",
-                            scale=1,
-                        )
-                    with gr.Row():
-                        additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
-                        additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
-                    with gr.Row():
-                        clear = gr.ClearButton(
-                            components=[
-                                gallery,
-                                model_repo,
-                                general_thresh,
-                                general_mcut_enabled,
-                                character_thresh,
-                                character_mcut_enabled,
-                                characters_merge_enabled,
-                                additional_tags_prepend,
-                                additional_tags_append,
-                            ],
-                            variant="secondary",
-                            size="lg",
-                        )
-                with gr.Column(variant="panel"):
-                    download_file = gr.File(label="Output (Download)")
-                    sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True)
-                    rating = gr.Label(label="Rating")
-                    character_res = gr.Label(label="Output (characters)")
-                    general_res = gr.Label(label="Output (tags)")
-                    clear.add(
-                        [
-                            download_file,
-                            sorted_general_strings,
-                            rating,
-                            character_res,
-                            general_res,
-                        ]
+                    general_mcut_enabled = gr.Checkbox(
+                        value=False,
+                        label="Use MCut threshold",
+                        scale=1,
                     )
+                with gr.Row():
+                    character_thresh = gr.Slider(
+                        0,
+                        1,
+                        step=args.score_slider_step,
+                        value=args.score_character_threshold,
+                        label="Character Tags Threshold",
+                        scale=3,
+                    )
+                    character_mcut_enabled = gr.Checkbox(
+                        value=False,
+                        label="Use MCut threshold",
+                        scale=1,
+                    )
+                with gr.Row():
+                    characters_merge_enabled = gr.Checkbox(
+                        value=True,
+                        label="Merge characters into the string output",
+                        scale=1,
+                    )
+                with gr.Row():
+                    additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
+                    additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
+                with gr.Row():
+                    clear = gr.ClearButton(
+                        components=[
+                            gallery,
+                            model_repo,
+                            general_thresh,
+                            general_mcut_enabled,
+                            character_thresh,
+                            character_mcut_enabled,
+                            characters_merge_enabled,
+                            additional_tags_prepend,
+                            additional_tags_append,
+                        ],
+                        variant="secondary",
+                        size="lg",
+                    )
+            with gr.Column(variant="panel"):
+                download_file = gr.File(label="Output (Download)")
+                sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True)
+                rating = gr.Label(label="Rating")
+                character_res = gr.Label(label="Output (characters)")
+                general_res = gr.Label(label="Output (tags)")
+                clear.add(
+                    [
+                        download_file,
+                        sorted_general_strings,
+                        rating,
+                        character_res,
+                        general_res,
+                    ]
+                )
 
-                # When the upload button is clicked, add the new images to the gallery
-                upload_button.upload(add_images_to_gallery, inputs=[gallery, upload_button], outputs=gallery)
-                # Event to update the selected image when an image is clicked in the gallery
-                selected_image = gr.Textbox(label="Selected Image", visible=False)
-                gallery.select(get_selection_from_gallery, inputs=gallery, outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
-                # Event to remove a selected image from the gallery
-                remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
+            # Define the event listener to add the uploaded image to the gallery
+            image_input.change(add_images_to_gallery, inputs=[gallery, image_input], outputs=gallery)
+
+            # When the upload button is clicked, add the new images to the gallery
+            upload_button.upload(add_images_to_gallery, inputs=[gallery, upload_button], outputs=gallery)
+            # Event to update the selected image when an image is clicked in the gallery
+            selected_image = gr.Textbox(label="Selected Image", visible=False)
+            gallery.select(get_selection_from_gallery, inputs=gallery, outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
+            # Event to remove a selected image from the gallery
+            remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
 
         submit.click(
             predictor.predict,
@@ -446,20 +460,20 @@ def main():
             outputs=[download_file, sorted_general_strings, rating, character_res, general_res],
         )
         
-        # gr.Examples(
-        #     [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]], 
-        #     inputs=[
-        #         gallery,
-        #         model_repo,
-        #         general_thresh,
-        #         general_mcut_enabled,
-        #         character_thresh,
-        #         character_mcut_enabled,
-        #         characters_merge_enabled,
-        #         additional_tags_prepend,
-        #         additional_tags_append,
-        #     ],
-        # )
+        gr.Examples(
+            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]], 
+            inputs=[
+                image_input,
+                model_repo,
+                general_thresh,
+                general_mcut_enabled,
+                character_thresh,
+                character_mcut_enabled,
+                characters_merge_enabled,
+                additional_tags_prepend,
+                additional_tags_append,
+            ],
+        )
 
     demo.queue(max_size=10)
     demo.launch(inbrowser=True)

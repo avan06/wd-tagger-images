@@ -1,12 +1,12 @@
 ---
-title: WaifuDiffusion Tagger
+title: WaifuDiffusion Tagger multiple images
 emoji: 💬
-colorFrom: blue
-colorTo: red
+colorFrom: purple
+colorTo: indigo
 sdk: gradio
-sdk_version: 5.6.0
+sdk_version: 5.12.0
 app_file: app.py
-pinned: false
+pinned: true
 ---
 
 # Configuration
