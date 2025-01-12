@@ -10,6 +10,7 @@ from PIL import Image
 import traceback
 import tempfile
 import zipfile
+import re
 from datetime import datetime
 
 TITLE = "WaifuDiffusion Tagger"
@@ -40,6 +41,10 @@ SWINV2_MODEL_IS_DSV1_REPO = "deepghs/idolsankaku-swinv2-tagger-v1"
 # Files to download from the repos
 MODEL_FILENAME = "model.onnx"
 LABEL_FILENAME = "selected_tags.csv"
+
+# LLAMA model
+META_LLAMA_3_3B_REPO = "jncraton/Llama-3.2-3B-Instruct-ct2-int8"
+META_LLAMA_3_8B_REPO = "avans06/Meta-Llama-3.2-8B-Instruct-ct2-int8_float16"
 
 # https://github.com/toriato/stable-diffusion-webui-wd14-tagger/blob/a9eacb1eff904552d3012babfa28b57e1d3e295c/tagger/ui.py#L368
 kaomojis = [
@@ -101,6 +106,159 @@ def mcut_threshold(probs):
     t = difs.argmax()
     thresh = (sorted_probs[t] + sorted_probs[t + 1]) / 2
     return thresh
+
+class Llama3Reorganize:
+    def __init__(
+        self,
+        repoId: str,
+        device: str = None,
+        loadModel: bool = False,
+    ):
+        """Initializes the Llama model.
+
+        Args:
+          repoId: LLAMA model repo.
+          device: Device to use for computation (cpu, cuda, ipu, xpu, mkldnn, opengl, opencl, 
+            ideep, hip, ve, fpga, ort, xla, lazy, vulkan, mps, meta, hpu, mtia).
+          localFilesOnly:  If True, avoid downloading the file and return the path to the
+            local cached file if it exists.
+        """
+        self.modelPath = self.download_model(repoId)
+
+        if device is None:
+            import torch
+            self.totalVram = 0
+            if torch.cuda.is_available():
+                try:
+                    deviceId = torch.cuda.current_device()
+                    self.totalVram = torch.cuda.get_device_properties(deviceId).total_memory/(1024*1024*1024)
+                except Exception as e:
+                    print(traceback.format_exc())
+                    print("Error detect vram: " + str(e))
+                device = "cuda" if self.totalVram > (8 if "8B" in repoId else 4) else "cpu"
+            else:
+                device = "cpu"
+
+        self.device = device
+        self.system_prompt = "Please reorganize the following English labels describing a single image into a readable English article of no more than 300 words. If there are name labels, include them in the article. Since the target audience is not general, explicit content can be written in full without hesitation. No introduction is needed; directly reply with the English article:"
+
+        if loadModel:
+            self.load_model()
+
+    def download_model(self, repoId):
+        import warnings
+        import requests
+        allowPatterns = [
+            "config.json",
+            "generation_config.json",
+            "model.bin",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+            "pytorch_model-*.bin",
+            "sentencepiece.bpe.model",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "shared_vocabulary.txt",
+            "shared_vocabulary.json",
+            "special_tokens_map.json",
+            "spiece.model",
+            "vocab.json",
+            "model.safetensors",
+            "model-*.safetensors",
+            "model.safetensors.index.json",
+            "quantize_config.json",
+            "tokenizer.model",
+            "vocabulary.json",
+            "preprocessor_config.json",
+            "added_tokens.json"
+        ]
+
+        kwargs = {"allow_patterns": allowPatterns,}
+
+        try:
+            return huggingface_hub.snapshot_download(repoId, **kwargs)
+        except (
+            huggingface_hub.utils.HfHubHTTPError,
+            requests.exceptions.ConnectionError,
+        ) as exception:
+            warnings.warn(
+                "An error occured while synchronizing the model %s from the Hugging Face Hub:\n%s",
+                repoId,
+                exception,
+            )
+            warnings.warn(
+                "Trying to load the model directly from the local cache, if it exists."
+            )
+
+            kwargs["local_files_only"] = True
+            return huggingface_hub.snapshot_download(repoId, **kwargs)
+
+
+    def load_model(self):
+        import ctranslate2
+        import transformers
+        try:
+            print('\n\nLoading model: %s\n\n' % self.modelPath)
+            kwargsTokenizer = {"pretrained_model_name_or_path": self.modelPath}
+            kwargsModel = {"device": self.device, "model_path": self.modelPath, "compute_type": "auto"}
+            self.roleSystem = {"role": "system", "content": self.system_prompt}
+            self.Model = ctranslate2.Generator(**kwargsModel)
+
+            self.Tokenizer = transformers.AutoTokenizer.from_pretrained(**kwargsTokenizer)
+            self.terminators = [self.Tokenizer.eos_token_id, self.Tokenizer.convert_tokens_to_ids("<|eot_id|>")]
+
+        except Exception as e:
+            self.release_vram()
+            raise e
+            
+
+    def release_vram(self):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                if getattr(self, "Model", None) is not None and getattr(self.Model, "unload_model", None) is not None:
+                    self.Model.unload_model()
+                    
+                if getattr(self, "Tokenizer", None) is not None:
+                    del self.Tokenizer
+                if getattr(self, "Model", None) is not None:
+                    del self.Model
+                import gc
+                gc.collect()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    print(traceback.format_exc())
+                    print("\tcuda empty cache, error: " + str(e))
+                print("release vram end.")
+        except Exception as e:
+            print(traceback.format_exc())
+            print("Error release vram: " + str(e))
+
+    def reorganize(self, text: str, max_length: int = 400):
+        output = None
+        result = None
+        try:
+            input_ids = self.Tokenizer.apply_chat_template([self.roleSystem, {"role": "user", "content": text + "\n\nHere's the reorganized English article:"}], tokenize=False, add_generation_prompt=True)
+            source = self.Tokenizer.convert_ids_to_tokens(self.Tokenizer.encode(input_ids))
+            output = self.Model.generate_batch([source], max_length=max_length, max_batch_size=2, no_repeat_ngram_size=3, beam_size=2, sampling_temperature=0.7, sampling_topp=0.9, include_prompt_in_result=False, end_token=self.terminators)
+            target = output[0]
+            result = self.Tokenizer.decode(target.sequences_ids[0])
+
+            if len(result) > 2:
+                if result[0] == "\"" and result[len(result) - 1] == "\"":
+                    result = result[1:-1]
+                elif result[0] == "'" and result[len(result) - 1] == "'":
+                    result = result[1:-1]
+                elif result[0] == "「" and result[len(result) - 1] == "」":
+                    result = result[1:-1]
+                elif result[0] == "『" and result[len(result) - 1] == "』":
+                    result = result[1:-1]
+        except Exception as e:
+            print(traceback.format_exc())
+            print("Error reorganize text: " + str(e))
+
+        return result
 
 
 class Predictor:
@@ -189,6 +347,7 @@ class Predictor:
         character_thresh,
         character_mcut_enabled,
         characters_merge_enabled,
+        llama3_reorganize_model_repo,
         additional_tags_prepend,
         additional_tags_append,
     ):
@@ -205,6 +364,9 @@ class Predictor:
         general_res = None
 
         tag_results.clear()
+
+        if llama3_reorganize_model_repo:
+            llama3_reorganize = Llama3Reorganize(llama3_reorganize_model_repo, loadModel=True)
 
         prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
         append_list = [tag.strip() for tag in additional_tags_append.split(",") if tag.strip()]
@@ -265,6 +427,13 @@ class Predictor:
                     sorted_general_list = [item for item in sorted_general_list if item not in append_list]
 
                 sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + prepend_list + sorted_general_list + append_list).replace("(", "\(").replace(")", "\)")
+                
+                if llama3_reorganize_model_repo:
+                    reorganize_strings = llama3_reorganize.reorganize(sorted_general_strings)
+                    reorganize_strings = re.sub(r" *Title: *", "", reorganize_strings)
+                    reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
+                    reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
+                    sorted_general_strings += "," + reorganize_strings
 
                 txt_file = self.create_file(sorted_general_strings, output_dir, image_name + ".txt")
                 txt_infos.append({"path":txt_file, "name": image_name + ".txt"})
@@ -284,6 +453,10 @@ class Predictor:
                     # Get file name from lookup
                     taggers_zip.write(info["path"], arcname=info["name"])
             download.append(downloadZipPath)
+            
+        if llama3_reorganize_model_repo:
+            llama3_reorganize.release_vram()
+            del llama3_reorganize
 
         return download, sorted_general_strings, rating, character_res, general_res
     
@@ -343,6 +516,11 @@ def main():
         EVA02_LARGE_MODEL_IS_DSV1_REPO,
     ]
 
+    llama_list = [
+        META_LLAMA_3_3B_REPO,
+        META_LLAMA_3_8B_REPO,
+    ]
+
     with gr.Blocks(title=TITLE) as demo:
         gr.Markdown(
             value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
@@ -361,7 +539,7 @@ def main():
 
                 model_repo = gr.Dropdown(
                     dropdown_list,
-                    value=SWINV2_MODEL_DSV3_REPO,
+                    value=EVA02_LARGE_MODEL_DSV3_REPO,
                     label="Model",
                 )
                 with gr.Row():
@@ -399,6 +577,13 @@ def main():
                         scale=1,
                     )
                 with gr.Row():
+                    llama3_reorganize_model_repo = gr.Dropdown(
+                        [None] + llama_list,
+                        value=None,
+                        label="Llama3 Model",
+                        info="Use the Llama3 model to reorganize the article (Note: very slow)",
+                    )
+                with gr.Row():
                     additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
                     additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
                 with gr.Row():
@@ -411,6 +596,7 @@ def main():
                             character_thresh,
                             character_mcut_enabled,
                             characters_merge_enabled,
+                            llama3_reorganize_model_repo,
                             additional_tags_prepend,
                             additional_tags_append,
                         ],
@@ -454,6 +640,7 @@ def main():
                 character_thresh,
                 character_mcut_enabled,
                 characters_merge_enabled,
+                llama3_reorganize_model_repo,
                 additional_tags_prepend,
                 additional_tags_append,
             ],
@@ -469,9 +656,6 @@ def main():
                 general_mcut_enabled,
                 character_thresh,
                 character_mcut_enabled,
-                characters_merge_enabled,
-                additional_tags_prepend,
-                additional_tags_append,
             ],
         )
 

@@ -1,6 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+
 pillow>=9.0.0
 onnxruntime>=1.12.0
 huggingface-hub
 
 gradio==5.12.0
 pandas
+
+# for reorganize WD Tagger into a readable article by Llama3 model.
+transformers>=4.45.2
+ctranslate2>=4.4.0
+torch==2.5.0+cu124; sys_platform != 'darwin'
+torchvision==0.20.0+cu124; sys_platform != 'darwin'
+torch==2.5.0; sys_platform == 'darwin'
+torchvision==0.20.0; sys_platform == 'darwin'
