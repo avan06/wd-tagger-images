@@ -470,17 +470,26 @@ def get_selection_from_gallery(gallery: list, selected_state: gr.SelectData):
 
     return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], tag_result["rating"], tag_result["character_res"], tag_result["general_res"]
 
-def add_images_to_gallery(gallery: list, images):
+def append_gallery(gallery: list, image: str):
+    if gallery is None:
+        gallery = []
+    if not image:
+        return gallery, None
+    
+    gallery.append(image)
+
+    return gallery, None
+
+
+def extend_gallery(gallery: list, images):
     if gallery is None:
         gallery = []
     if not images:
         return gallery
     
     # Combine the new images with the existing gallery images
-    if type(images) is str:
-        gallery.append(images)
-    else:
-        gallery.extend(images)
+    gallery.extend(images)
+
     return gallery
 
 def remove_image_from_gallery(gallery: list, selected_image: str):
@@ -620,10 +629,9 @@ def main():
                 )
 
             # Define the event listener to add the uploaded image to the gallery
-            image_input.change(add_images_to_gallery, inputs=[gallery, image_input], outputs=gallery)
-
+            image_input.change(append_gallery, inputs=[gallery, image_input], outputs=[gallery, image_input])
             # When the upload button is clicked, add the new images to the gallery
-            upload_button.upload(add_images_to_gallery, inputs=[gallery, upload_button], outputs=gallery)
+            upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
             selected_image = gr.Textbox(label="Selected Image", visible=False)
             gallery.select(get_selection_from_gallery, inputs=gallery, outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
