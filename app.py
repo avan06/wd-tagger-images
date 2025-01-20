@@ -69,8 +69,6 @@ kaomojis = [
     "||_||",
 ]
 
-tag_results = {}
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -350,7 +348,9 @@ class Predictor:
         llama3_reorganize_model_repo,
         additional_tags_prepend,
         additional_tags_append,
+        tag_results,
     ):
+        print(f"Predict load model: {model_repo}, gallery length: {len(gallery)}")
         self.load_model(model_repo)
         # Result
         txt_infos = []
@@ -363,16 +363,15 @@ class Predictor:
         character_res = None
         general_res = None
 
-        tag_results.clear()
-
         if llama3_reorganize_model_repo:
+            print(f"Llama3 reorganize load model {llama3_reorganize_model_repo}")
             llama3_reorganize = Llama3Reorganize(llama3_reorganize_model_repo, loadModel=True)
 
         prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
         append_list = [tag.strip() for tag in additional_tags_append.split(",") if tag.strip()]
         if prepend_list and append_list:
             append_list = [item for item in append_list if item not in prepend_list]
-
+            
         for idx, value in enumerate(gallery):
             try:
                 image_path = value[0]
@@ -382,6 +381,7 @@ class Predictor:
 
                 input_name = self.model.get_inputs()[0].name
                 label_name = self.model.get_outputs()[0].name
+                print(f"Gallery {idx}: Starting run wd model...")
                 preds = self.model.run([label_name], {input_name: image})[0]
 
                 labels = list(zip(self.tag_names, preds[0].astype(float)))
@@ -429,6 +429,7 @@ class Predictor:
                 sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + prepend_list + sorted_general_list + append_list).replace("(", "\(").replace(")", "\)")
                 
                 if llama3_reorganize_model_repo:
+                    print(f"Starting reorganize with llama3...")
                     reorganize_strings = llama3_reorganize.reorganize(sorted_general_strings)
                     reorganize_strings = re.sub(r" *Title: *", "", reorganize_strings)
                     reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
@@ -458,9 +459,11 @@ class Predictor:
             llama3_reorganize.release_vram()
             del llama3_reorganize
 
-        return download, sorted_general_strings, rating, character_res, general_res
+        print("Predict is complete.")
+
+        return download, sorted_general_strings, rating, character_res, general_res, tag_results
     
-def get_selection_from_gallery(gallery: list, selected_state: gr.SelectData):
+def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state: gr.SelectData):
     if not selected_state:
         return selected_state
 
@@ -627,14 +630,15 @@ def main():
                         general_res,
                     ]
                 )
-
+                
+            tag_results = gr.State({})
             # Define the event listener to add the uploaded image to the gallery
             image_input.change(append_gallery, inputs=[gallery, image_input], outputs=[gallery, image_input])
             # When the upload button is clicked, add the new images to the gallery
             upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
             selected_image = gr.Textbox(label="Selected Image", visible=False)
-            gallery.select(get_selection_from_gallery, inputs=gallery, outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
+            gallery.select(get_selection_from_gallery, inputs=[gallery, tag_results], outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
             # Event to remove a selected image from the gallery
             remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
 
@@ -651,8 +655,9 @@ def main():
                 llama3_reorganize_model_repo,
                 additional_tags_prepend,
                 additional_tags_append,
+                tag_results,
             ],
-            outputs=[download_file, sorted_general_strings, rating, character_res, general_res],
+            outputs=[download_file, sorted_general_strings, rating, character_res, general_res, tag_results,],
         )
         
         gr.Examples(
@@ -667,7 +672,7 @@ def main():
             ],
         )
 
-    demo.queue(max_size=10)
+    demo.queue(max_size=2)
     demo.launch(inbrowser=True)
 
 
