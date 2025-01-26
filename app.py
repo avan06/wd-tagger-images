@@ -12,8 +12,9 @@ import tempfile
 import zipfile
 import re
 from datetime import datetime
+from collections import defaultdict
 
-TITLE = "WaifuDiffusion Tagger"
+TITLE = "WaifuDiffusion Tagger multiple images"
 DESCRIPTION = """
 Demo for the WaifuDiffusion tagger models
 
@@ -372,10 +373,17 @@ class Predictor:
         if prepend_list and append_list:
             append_list = [item for item in append_list if item not in prepend_list]
             
+        # Dictionary to track counters for each filename
+        name_counters = defaultdict(int)
         for idx, value in enumerate(gallery):
             try:
                 image_path = value[0]
                 image_name = os.path.splitext(os.path.basename(image_path))[0]
+
+                # Increment the counter for the current name
+                name_counters[image_name] += 1
+                if name_counters[image_name] > 1:
+                    image_name = f"{image_name}_{name_counters[image_name]:02d}"
 
                 image = self.prepare_image(image_path)
 
