@@ -2,3 +2,4 @@ images
 .vs
 venv
 tmp
+*.pyc

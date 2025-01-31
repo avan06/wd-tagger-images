@@ -13,12 +13,16 @@ import zipfile
 import re
 from datetime import datetime
 from collections import defaultdict
+from classifyTags import classify_tags
 
 TITLE = "WaifuDiffusion Tagger multiple images"
 DESCRIPTION = """
-Demo for the WaifuDiffusion tagger models
-
+Demo for the WaifuDiffusion tagger models  
 Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
+
+Features of This Modified Version:
+- Supports batch processing of multiple images
+- Displays tag results in categorized groups: the generated tags will now be analyzed and categorized into corresponding groups.
 """
 
 # Dataset v3 series of models:
@@ -434,7 +438,11 @@ class Predictor:
                 if append_list:
                     sorted_general_list = [item for item in sorted_general_list if item not in append_list]
 
-                sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + prepend_list + sorted_general_list + append_list).replace("(", "\(").replace(")", "\)")
+                sorted_general_list = prepend_list + sorted_general_list + append_list
+
+                sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + sorted_general_list).replace("(", "\(").replace(")", "\)")
+
+                classified_tags, unclassified_tags = classify_tags(sorted_general_list)
                 
                 if llama3_reorganize_model_repo:
                     print(f"Starting reorganize with llama3...")
@@ -447,7 +455,7 @@ class Predictor:
                 txt_file = self.create_file(sorted_general_strings, output_dir, image_name + ".txt")
                 txt_infos.append({"path":txt_file, "name": image_name + ".txt"})
 
-                tag_results[image_path] = { "strings": sorted_general_strings, "rating": rating, "character_res": character_res, "general_res": general_res }
+                tag_results[image_path] = { "strings": sorted_general_strings, "classified_tags": classified_tags, "rating": rating, "character_res": character_res, "general_res": general_res, "unclassified_tags": unclassified_tags }
 
             except Exception as e:
                 print(traceback.format_exc())
@@ -469,17 +477,17 @@ class Predictor:
 
         print("Predict is complete.")
 
-        return download, sorted_general_strings, rating, character_res, general_res, tag_results
+        return download, sorted_general_strings, classified_tags, rating, character_res, general_res, unclassified_tags, tag_results
     
 def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state: gr.SelectData):
     if not selected_state:
         return selected_state
 
-    tag_result = { "strings": "", "rating": "", "character_res": "", "general_res": "" }
+    tag_result = { "strings": "", "classified_tags": "", "rating": "", "character_res": "", "general_res": "", "unclassified_tags": "" }
     if selected_state.value["image"]["path"] in tag_results:
         tag_result = tag_results[selected_state.value["image"]["path"]]
 
-    return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], tag_result["rating"], tag_result["character_res"], tag_result["general_res"]
+    return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], tag_result["classified_tags"], tag_result["rating"], tag_result["character_res"], tag_result["general_res"], tag_result["unclassified_tags"]
 
 def append_gallery(gallery: list, image: str):
     if gallery is None:
@@ -626,16 +634,20 @@ def main():
             with gr.Column(variant="panel"):
                 download_file = gr.File(label="Output (Download)")
                 sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True)
+                categorized = gr.JSON(label="Categorized (tags)")
                 rating = gr.Label(label="Rating")
                 character_res = gr.Label(label="Output (characters)")
                 general_res = gr.Label(label="Output (tags)")
+                unclassified = gr.JSON(label="Unclassified (tags)")
                 clear.add(
                     [
                         download_file,
                         sorted_general_strings,
+                        categorized,
                         rating,
                         character_res,
                         general_res,
+                        unclassified,
                     ]
                 )
                 
@@ -646,7 +658,7 @@ def main():
             upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
             selected_image = gr.Textbox(label="Selected Image", visible=False)
-            gallery.select(get_selection_from_gallery, inputs=[gallery, tag_results], outputs=[selected_image, sorted_general_strings, rating, character_res, general_res])
+            gallery.select(get_selection_from_gallery, inputs=[gallery, tag_results], outputs=[selected_image, sorted_general_strings, categorized, rating, character_res, general_res, unclassified])
             # Event to remove a selected image from the gallery
             remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
 
@@ -665,7 +677,7 @@ def main():
                 additional_tags_append,
                 tag_results,
             ],
-            outputs=[download_file, sorted_general_strings, rating, character_res, general_res, tag_results,],
+            outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results,],
         )
         
         gr.Examples(
