@@ -11,6 +11,7 @@ import traceback
 import tempfile
 import zipfile
 import re
+import ast
 from datetime import datetime
 from collections import defaultdict
 from classifyTags import classify_tags
@@ -483,7 +484,7 @@ def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state:
     if not selected_state:
         return selected_state
 
-    tag_result = { "strings": "", "classified_tags": "", "rating": "", "character_res": "", "general_res": "", "unclassified_tags": "" }
+    tag_result = { "strings": "", "classified_tags": "{}", "rating": "", "character_res": "", "general_res": "", "unclassified_tags": "{}" }
     if selected_state.value["image"]["path"] in tag_results:
         tag_result = tag_results[selected_state.value["image"]["path"]]
 
@@ -515,7 +516,7 @@ def remove_image_from_gallery(gallery: list, selected_image: str):
     if not gallery or not selected_image:
         return gallery
 
-    selected_image = eval(selected_image)
+    selected_image = ast.literal_eval(selected_image) #Use ast.literal_eval to parse text into a tuple.
     # Remove the selected image from the gallery
     if selected_image in gallery:
         gallery.remove(selected_image)

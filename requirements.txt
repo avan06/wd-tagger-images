@@ -4,7 +4,7 @@ pillow>=9.0.0
 onnxruntime>=1.12.0
 huggingface-hub
 
-gradio==5.14.0
+gradio==5.16.0
 pandas
 
 # for reorganize WD Tagger into a readable article by Llama3 model.
