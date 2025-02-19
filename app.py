@@ -12,6 +12,7 @@ import tempfile
 import zipfile
 import re
 import ast
+import time
 from datetime import datetime
 from collections import defaultdict
 from classifyTags import classify_tags
@@ -110,6 +111,52 @@ def mcut_threshold(probs):
     t = difs.argmax()
     thresh = (sorted_probs[t] + sorted_probs[t + 1]) / 2
     return thresh
+
+class Timer:
+    def __init__(self):
+        self.start_time  = time.perf_counter()  # Record the start time
+        self.checkpoints = [("Start", self.start_time)]  # Store checkpoints
+
+    def checkpoint(self, label="Checkpoint"):
+        """Record a checkpoint with a given label."""
+        now = time.perf_counter()
+        self.checkpoints.append((label, now))
+
+    def report(self, is_clear_checkpoints = True):
+        # Determine the max label width for alignment
+        max_label_length = max(len(label) for label, _ in self.checkpoints)
+
+        prev_time = self.checkpoints[0][1]
+        for label, curr_time in self.checkpoints[1:]:
+            elapsed = curr_time - prev_time
+            print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
+            prev_time = curr_time
+        
+        if is_clear_checkpoints:
+            self.checkpoints.clear()
+            self.checkpoint()  # Store checkpoints
+
+    def report_all(self):
+        """Print all recorded checkpoints and total execution time with aligned formatting."""
+        print("\n> Execution Time Report:")
+
+        # Determine the max label width for alignment
+        max_label_length = max(len(label) for label, _ in self.checkpoints) if len(self.checkpoints) > 0 else 0
+
+        prev_time = self.start_time
+        for label, curr_time in self.checkpoints[1:]:
+            elapsed = curr_time - prev_time
+            print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
+            prev_time = curr_time
+        
+        total_time = self.checkpoints[-1][1] - self.start_time
+        print(f"{'Total Execution Time'.ljust(max_label_length)}: {total_time:.3f} seconds\n")
+
+        self.checkpoints.clear()
+
+    def restart(self):
+        self.start_time  = time.perf_counter()  # Record the start time
+        self.checkpoints = [("Start", self.start_time)]  # Store checkpoints
 
 class Llama3Reorganize:
     def __init__(
@@ -355,9 +402,21 @@ class Predictor:
         additional_tags_prepend,
         additional_tags_append,
         tag_results,
+        progress=gr.Progress()
     ):
-        print(f"Predict load model: {model_repo}, gallery length: {len(gallery)}")
+        gallery_len = len(gallery)
+        print(f"Predict load model: {model_repo}, gallery length: {gallery_len}")
+
+        timer = Timer()  # Create a timer
+        progressRatio = 0.5 if llama3_reorganize_model_repo else 1
+        progressTotal = gallery_len + 1
+        current_progress = 0
+
         self.load_model(model_repo)
+        current_progress += progressRatio/progressTotal;
+        progress(current_progress, desc="Initialize wd model finished")
+        timer.checkpoint(f"Initialize wd model")
+
         # Result
         txt_infos = []
         output_dir = tempfile.mkdtemp()
@@ -372,6 +431,11 @@ class Predictor:
         if llama3_reorganize_model_repo:
             print(f"Llama3 reorganize load model {llama3_reorganize_model_repo}")
             llama3_reorganize = Llama3Reorganize(llama3_reorganize_model_repo, loadModel=True)
+            current_progress += progressRatio/progressTotal;
+            progress(current_progress, desc="Initialize llama3 model finished")
+            timer.checkpoint(f"Initialize llama3 model")
+            
+        timer.report()
 
         prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
         append_list = [tag.strip() for tag in additional_tags_append.split(",") if tag.strip()]
@@ -394,7 +458,7 @@ class Predictor:
 
                 input_name = self.model.get_inputs()[0].name
                 label_name = self.model.get_outputs()[0].name
-                print(f"Gallery {idx}: Starting run wd model...")
+                print(f"Gallery {idx:02d}: Starting run wd model...")
                 preds = self.model.run([label_name], {input_name: image})[0]
 
                 labels = list(zip(self.tag_names, preds[0].astype(float)))
@@ -444,6 +508,10 @@ class Predictor:
                 sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + sorted_general_list).replace("(", "\(").replace(")", "\)")
 
                 classified_tags, unclassified_tags = classify_tags(sorted_general_list)
+
+                current_progress += progressRatio/progressTotal;
+                progress(current_progress, desc=f"image{idx:02d}, predict finished")
+                timer.checkpoint(f"image{idx:02d}, predict finished")
                 
                 if llama3_reorganize_model_repo:
                     print(f"Starting reorganize with llama3...")
@@ -453,11 +521,15 @@ class Predictor:
                     reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
                     sorted_general_strings += "," + reorganize_strings
 
+                    current_progress += progressRatio/progressTotal;
+                    progress(current_progress, desc=f"image{idx:02d}, llama3 reorganize finished")
+                    timer.checkpoint(f"image{idx:02d}, llama3 reorganize finished")
+
                 txt_file = self.create_file(sorted_general_strings, output_dir, image_name + ".txt")
                 txt_infos.append({"path":txt_file, "name": image_name + ".txt"})
 
                 tag_results[image_path] = { "strings": sorted_general_strings, "classified_tags": classified_tags, "rating": rating, "character_res": character_res, "general_res": general_res, "unclassified_tags": unclassified_tags }
-
+                timer.report()
             except Exception as e:
                 print(traceback.format_exc())
                 print("Error predict: " + str(e))
@@ -475,7 +547,9 @@ class Predictor:
         if llama3_reorganize_model_repo:
             llama3_reorganize.release_vram()
             del llama3_reorganize
-
+            
+        progress(1, desc=f"Predict completed")
+        timer.report_all()  # Print all recorded times
         print("Predict is complete.")
 
         return download, sorted_general_strings, classified_tags, rating, character_res, general_res, unclassified_tags, tag_results
@@ -524,6 +598,14 @@ def remove_image_from_gallery(gallery: list, selected_image: str):
 
 
 def main():
+    # Custom CSS to set the height of the gr.Dropdown menu
+    css = """
+    div.progress-level div.progress-level-inner {
+        text-align: left !important;
+        width: 55.5% !important;
+    }
+    """
+
     args = parse_args()
 
     predictor = Predictor()
@@ -550,7 +632,7 @@ def main():
         META_LLAMA_3_8B_REPO,
     ]
 
-    with gr.Blocks(title=TITLE) as demo:
+    with gr.Blocks(title=TITLE, css = css) as demo:
         gr.Markdown(
             value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
         )
@@ -561,10 +643,10 @@ def main():
                 with gr.Column(variant="panel"):
                     # Create an Image component for uploading images
                     image_input = gr.Image(label="Upload an Image or clicking paste from clipboard button", type="filepath", sources=["upload", "clipboard"], height=150)
-                    gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
                     with gr.Row():
                         upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
                         remove_button = gr.Button("Remove Selected Image", size="sm")
+                    gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
 
                 model_repo = gr.Dropdown(
                     dropdown_list,
