@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from collections import defaultdict
 from classifyTags import classify_tags
+from collections import Counter # Import Counter for statistics
 
 TITLE = "WaifuDiffusion Tagger multiple images/texts"
 DESCRIPTION = """
@@ -172,7 +173,7 @@ class Llama3Reorganize:
 
         Args:
           repoId: LLAMA model repo.
-          device: Device to use for computation (cpu, cuda, ipu, xpu, mkldnn, opengl, opencl, 
+          device: Device to use for computation (cpu, cuda, ipu, xpu, mkldnn, opengl, opencl,
             ideep, hip, ve, fpga, ort, xla, lazy, vulkan, mps, meta, hpu, mtia).
           localFilesOnly:  If True, avoid downloading the file and return the path to the
             local cached file if it exists.
@@ -264,7 +265,7 @@ class Llama3Reorganize:
         except Exception as e:
             self.release_vram()
             raise e
-            
+
 
     def release_vram(self):
         try:
@@ -348,7 +349,7 @@ class Predictor:
         canvas = Image.new("RGBA", image.size, (255, 255, 255))
         canvas.alpha_composite(image)
         image = canvas.convert("RGB")
-        
+
         # Pad image to square
         image_shape = image.size
         max_dim = max(image_shape)
@@ -357,14 +358,14 @@ class Predictor:
 
         padded_image = Image.new("RGB", (max_dim, max_dim), (255, 255, 255))
         padded_image.paste(image, (pad_left, pad_top))
-        
+
         # Resize
         if max_dim != self.model_target_size:
             padded_image = padded_image.resize(
                 (self.model_target_size, self.model_target_size),
                 Image.BICUBIC,
             )
-            
+
         # Convert to numpy array
         image_array = np.asarray(padded_image, dtype=np.float32)
 
@@ -398,11 +399,11 @@ class Predictor:
     ):
         if not gallery:
              gr.Warning("No images in the gallery to process.")
-             return None, "", "{}", "", "", "", "{}", {}
-        
+             return None, "", "{}", "", "", "", "{}", {}, ""
+
         gallery_len = len(gallery)
         print(f"Predict from images: load model: {model_repo}, gallery length: {gallery_len}")
-        
+
         timer = Timer()  # Create a timer
         progressRatio = 0.5 if llama3_reorganize_model_repo else 1
         progressTotal = gallery_len + (1 if llama3_reorganize_model_repo else 0) + 1 # +1 for model load
@@ -416,10 +417,13 @@ class Predictor:
         # Result
         txt_infos = []
         output_dir = tempfile.mkdtemp()
-        
+
         last_sorted_general_strings = ""
         last_classified_tags, last_unclassified_tags = {}, {}
         last_rating, last_character_res, last_general_res = None, None, None
+
+        # Initialize counter for statistics
+        tag_counter = Counter()
 
         llama3_reorganize = None
         if llama3_reorganize_model_repo:
@@ -428,7 +432,7 @@ class Predictor:
             current_progress += 1 / progressTotal
             progress(current_progress, desc="Initialize llama3 model finished")
             timer.checkpoint(f"Initialize llama3 model")
-        
+
         timer.report()
 
         prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
@@ -457,11 +461,11 @@ class Predictor:
                 preds = self.model.run([label_name], {input_name: image})[0]
 
                 labels = list(zip(self.tag_names, preds[0].astype(float)))
-                
+
                 # First 4 labels are actually ratings: pick one with argmax
                 ratings_names = [labels[i] for i in self.rating_indexes]
                 rating = dict(ratings_names)
-                
+
                 # Then we have general tags: pick any where prediction confidence > threshold
                 general_names = [labels[i] for i in self.general_indexes]
 
@@ -469,7 +473,7 @@ class Predictor:
                     general_probs = np.array([x[1] for x in general_names])
                     general_thresh = mcut_threshold(general_probs)
                 general_res = dict([x for x in general_names if x[1] > general_thresh])
-                
+
                 # Everything else is characters: pick any where prediction confidence > threshold
                 character_names = [labels[i] for i in self.character_indexes]
 
@@ -493,11 +497,14 @@ class Predictor:
                 final_tags_list = prepend_list + sorted_general_list + append_list
                 if characters_merge_enabled:
                     final_tags_list = character_list + final_tags_list
-                
+
                 # Apply removal logic
                 if remove_list:
                     remove_set = set(remove_list)
                     final_tags_list = [tag for tag in final_tags_list if tag not in remove_set]
+
+                # Update counter with the final list of tags for this image
+                tag_counter.update(final_tags_list)
 
                 sorted_general_strings = ", ".join(final_tags_list).replace("(", "\(").replace(")", "\)")
                 classified_tags, unclassified_tags = classify_tags(final_tags_list)
@@ -505,7 +512,7 @@ class Predictor:
                 current_progress += progressRatio / progressTotal
                 progress(current_progress, desc=f"Image {idx+1}/{gallery_len}, predict finished")
                 timer.checkpoint(f"Image {idx+1}/{gallery_len}, predict finished")
-                
+
                 if llama3_reorganize:
                     print(f"Starting reorganize with llama3...")
                     reorganize_strings = llama3_reorganize.reorganize(sorted_general_strings)
@@ -523,7 +530,7 @@ class Predictor:
                 txt_infos.append({"path": txt_file, "name": image_name + ".txt"})
 
                 tag_results[image_path] = { "strings": sorted_general_strings, "classified_tags": classified_tags, "rating": rating, "character_res": character_res, "general_res": general_res, "unclassified_tags": unclassified_tags }
-                
+
                 # Store last result for UI display
                 last_sorted_general_strings = sorted_general_strings
                 last_classified_tags = classified_tags
@@ -537,7 +544,7 @@ class Predictor:
                 print(traceback.format_exc())
                 print("Error predicting image: " + str(e))
                 gr.Warning(f"Failed to process image {os.path.basename(value[0])}. Error: {e}")
-                
+
         # Result
         download = []
         if txt_infos:
@@ -548,16 +555,20 @@ class Predictor:
                     # Get file name from lookup
                     taggers_zip.write(info["path"], arcname=info["name"])
             download.append(downloadZipPath)
-        
+
         if llama3_reorganize:
             llama3_reorganize.release_vram()
 
         progress(1, desc="Image processing completed")
         timer.report_all()
         print("Image prediction is complete.")
+        
+        # Format statistics for output
+        stats_list = [f"{tag}: {count}" for tag, count in tag_counter.most_common()]
+        statistics_output = "\n".join(stats_list)
 
-        return download, last_sorted_general_strings, last_classified_tags, last_rating, last_character_res, last_general_res, last_unclassified_tags, tag_results
-    
+        return download, last_sorted_general_strings, last_classified_tags, last_rating, last_character_res, last_general_res, last_unclassified_tags, tag_results, statistics_output
+
     # Method to process text files
     def predict_from_text(
         self,
@@ -570,7 +581,7 @@ class Predictor:
     ):
         if not text_files:
              gr.Warning("No text files uploaded to process.")
-             return None, "", "{}", "", "", "", "{}", {}
+             return None, "", "{}", "", "", "", "{}", {}, ""
 
         files_len = len(text_files)
         print(f"Predict from text: processing {files_len} files.")
@@ -579,10 +590,13 @@ class Predictor:
         progressRatio = 0.5 if llama3_reorganize_model_repo else 1.0
         progressTotal = files_len + (1 if llama3_reorganize_model_repo else 0)
         current_progress = 0
-        
+
         txt_infos = []
         output_dir = tempfile.mkdtemp()
         last_processed_string = ""
+        
+        # Initialize counter for statistics
+        tag_counter = Counter()
 
         llama3_reorganize = None
         if llama3_reorganize_model_repo:
@@ -591,7 +605,7 @@ class Predictor:
             current_progress += 1 / progressTotal
             progress(current_progress, desc="Initialize llama3 model finished")
             timer.checkpoint(f"Initialize llama3 model")
-            
+
         timer.report()
 
         prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
@@ -599,7 +613,7 @@ class Predictor:
         remove_list = [tag.strip() for tag in tags_to_remove.split(",") if tag.strip()] # Parse remove tags
         if prepend_list and append_list:
             append_list = [item for item in append_list if item not in prepend_list]
-        
+
         name_counters = defaultdict(int)
         for idx, file_obj in enumerate(text_files):
             try:
@@ -614,7 +628,7 @@ class Predictor:
 
                 with open(file_path, 'r', encoding='utf-8') as f:
                     original_content = f.read()
-                
+
                 # Process tags
                 tags_list = [tag.strip() for tag in original_content.split(',') if tag.strip()]
 
@@ -629,9 +643,12 @@ class Predictor:
                 if remove_list:
                     remove_set = set(remove_list)
                     final_tags_list = [tag for tag in final_tags_list if tag not in remove_set]
+                
+                # Update counter with the final list of tags for this file
+                tag_counter.update(final_tags_list)
 
                 processed_string = ", ".join(final_tags_list)
-                
+
                 current_progress += progressRatio / progressTotal
                 progress(current_progress, desc=f"File {idx+1}/{files_len}, base processing finished")
                 timer.checkpoint(f"File {idx+1}/{files_len}, base processing finished")
@@ -644,16 +661,16 @@ class Predictor:
                         reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
                         reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
                         processed_string += "," + reorganize_strings
-                    
+
                     current_progress += progressRatio / progressTotal
                     progress(current_progress, desc=f"File {idx+1}/{files_len}, llama3 reorganize finished")
                     timer.checkpoint(f"File {idx+1}/{files_len}, llama3 reorganize finished")
-                
+
                 txt_file_path = self.create_file(processed_string, output_dir, output_file_name)
                 txt_infos.append({"path": txt_file_path, "name": output_file_name})
                 last_processed_string = processed_string
                 timer.report()
-            
+
             except Exception as e:
                 print(traceback.format_exc())
                 print("Error processing text file: " + str(e))
@@ -675,8 +692,12 @@ class Predictor:
         timer.report_all()  # Print all recorded times
         print("Text processing is complete.")
         
+        # Format statistics for output
+        stats_list = [f"{tag}: {count}" for tag, count in tag_counter.most_common()]
+        statistics_output = "\n".join(stats_list)
+        
         # Return values in the same structure as the image path, with placeholders for unused outputs
-        return download, last_processed_string, "{}", "", "", "", "{}", {}
+        return download, last_processed_string, "{}", "", "", "", "{}", {}, statistics_output
 
 def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state: gr.SelectData):
     if not selected_state:
@@ -703,7 +724,7 @@ def extend_gallery(gallery: list, images):
         gallery = []
     if not images:
         return gallery
-    
+
     # Combine the new images with the existing gallery images
     gallery.extend(images)
 
@@ -732,6 +753,18 @@ def main():
         text-align: left !important;
         width: 55.5% !important;
     }
+    textarea[rows]:not([rows="1"]) {
+        overflow-y: auto !important;
+        scrollbar-width: thin !important;
+    }
+    textarea[rows]:not([rows="1"])::-webkit-scrollbar {
+        all: initial !important;
+        background: #f1f1f1 !important;
+    }
+    textarea[rows]:not([rows="1"])::-webkit-scrollbar-thumb {
+        all: initial !important;
+        background: #a8a8a8 !important;
+    }
     """
     args = parse_args()
 
@@ -758,7 +791,7 @@ def main():
         META_LLAMA_3_3B_REPO,
         META_LLAMA_3_8B_REPO,
     ]
-    
+
     # Wrapper function to decide which prediction method to call
     def run_prediction(
         input_type, gallery, text_files, model_repo, general_thresh,
@@ -785,18 +818,18 @@ def main():
     with gr.Blocks(title=TITLE, css=css) as demo:
         gr.Markdown(f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>")
         gr.Markdown(value=DESCRIPTION)
-        
+
         with gr.Row():
             with gr.Column():
                 submit = gr.Button(value="Submit", variant="primary", size="lg")
-                
+
                 # Input type selector
                 input_type_radio = gr.Radio(
-                    choices=['Image', 'Text file (.txt)'], 
-                    value='Image', 
+                    choices=['Image', 'Text file (.txt)'],
+                    value='Image',
                     label="Input Type"
                 )
-                
+
                 # Group for image inputs, initially visible
                 with gr.Column(visible=True) as image_inputs_group:
                     with gr.Column(variant="panel"):
@@ -806,7 +839,7 @@ def main():
                             upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
                             remove_button = gr.Button("Remove Selected Image", size="sm")
                         gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
-                        
+
                 # Group for text file inputs, initially hidden
                 with gr.Column(visible=False) as text_inputs_group:
                     text_files_input = gr.Files(
@@ -856,7 +889,7 @@ def main():
                     scale=1,
                     visible=True,
                 )
-                
+
                 # Common settings
                 with gr.Row():
                     llama3_reorganize_model_repo = gr.Dropdown(
@@ -868,11 +901,11 @@ def main():
                 with gr.Row():
                     additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
                     additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
-                
+                    
                 # Add the remove tags input box
                 with gr.Row():
                     tags_to_remove = gr.Text(label="Remove tags (comma split)")
-                
+
                 with gr.Row():
                     clear = gr.ClearButton(
                         components=[
@@ -895,13 +928,26 @@ def main():
 
             with gr.Column(variant="panel"):
                 download_file = gr.File(label="Output (Download)")
-                sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True, lines=5)
-                # Image-specific outputs
-                categorized = gr.JSON(label="Categorized (tags)", visible=True)
-                rating = gr.Label(label="Rating", visible=True)
-                character_res = gr.Label(label="Output (characters)", visible=True)
-                general_res = gr.Label(label="Output (tags)", visible=True)
-                unclassified = gr.JSON(label="Unclassified (tags)", visible=True)
+                sorted_general_strings = gr.Textbox(label="Output (string for last processed item)", show_label=True, show_copy_button=True, lines=5)
+                
+                with gr.Accordion("Categorized (tags)", open=False):
+                    categorized = gr.JSON(label="Categorized")
+                    
+                with gr.Accordion("Detailed Output (for last processed item)", open=False):
+                    rating = gr.Label(label="Rating", visible=True)
+                    character_res = gr.Label(label="Output (characters)", visible=True)
+                    general_res = gr.Label(label="Output (tags)", visible=True)
+                    unclassified = gr.JSON(label="Unclassified (tags)", visible=True)
+                
+                with gr.Accordion("Tags Statistics (All files)", open=False):
+                    tags_statistics = gr.Text(
+                        label="Statistics", 
+                        autoscroll=False,
+                        show_label=False,
+                        show_copy_button=True, 
+                        lines=10,
+                    )
+
                 clear.add(
                     [
                         download_file,
@@ -911,12 +957,13 @@ def main():
                         character_res,
                         general_res,
                         unclassified,
+                        tags_statistics,
                     ]
                 )
 
             tag_results = gr.State({})
             selected_image = gr.Textbox(label="Selected Image", visible=False)
-            
+
             # Event Listeners
             # Define the event listener to add the uploaded image to the gallery
             image_input.change(append_gallery, inputs=[gallery, image_input], outputs=[gallery, image_input])
@@ -955,7 +1002,7 @@ def main():
                     categorized, rating, character_res, general_res, unclassified
                 ]
             )
-            
+
             # submit click now calls the wrapper function
             submit.click(
                 fn=run_prediction,
@@ -975,11 +1022,11 @@ def main():
                     tags_to_remove,
                     tag_results,
                 ],
-                outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results,],
+                outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results, tags_statistics],
             )
-        
+
         gr.Examples(
-            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]], 
+            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
             inputs=[
                 image_input,
                 model_repo,
