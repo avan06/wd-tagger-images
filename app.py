@@ -17,14 +17,16 @@ from datetime import datetime
 from collections import defaultdict
 from classifyTags import classify_tags
 
-TITLE = "WaifuDiffusion Tagger multiple images"
+TITLE = "WaifuDiffusion Tagger multiple images/texts"
 DESCRIPTION = """
-Demo for the WaifuDiffusion tagger models  
+Demo for the WaifuDiffusion tagger models and text processing.
+Select input type below. For images, it will generate tags. For text files, it will process existing tags.
 Example image by [ほし☆☆☆](https://www.pixiv.net/en/users/43565085)
 
+This project was duplicated from the Space of [wd-tagger](https://huggingface.co/spaces/SmilingWolf/wd-tagger) by the author SmilingWolf.  
 Features of This Modified Version:
-- Supports batch processing of multiple images
-- Displays tag results in categorized groups: the generated tags will now be analyzed and categorized into corresponding groups.
+- Supports batch processing of multiple images or text files.
+- Displays tag results in categorized groups: the generated tags will now be analyzed and categorized into corresponding groups. (for images)
 """
 
 # Dataset v3 series of models:
@@ -124,33 +126,34 @@ class Timer:
 
     def report(self, is_clear_checkpoints = True):
         # Determine the max label width for alignment
-        max_label_length = max(len(label) for label, _ in self.checkpoints)
+        max_label_length = max(len(label) for label, _ in self.checkpoints) if self.checkpoints else 0
 
-        prev_time = self.checkpoints[0][1]
-        for label, curr_time in self.checkpoints[1:]:
-            elapsed = curr_time - prev_time
-            print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
-            prev_time = curr_time
+        if len(self.checkpoints) > 1:
+            prev_time = self.checkpoints[0][1]
+            for label, curr_time in self.checkpoints[1:]:
+                elapsed = curr_time - prev_time
+                print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
+                prev_time = curr_time
         
         if is_clear_checkpoints:
-            self.checkpoints.clear()
-            self.checkpoint()  # Store checkpoints
+            self.checkpoints = [("Start", time.perf_counter())]
 
     def report_all(self):
         """Print all recorded checkpoints and total execution time with aligned formatting."""
         print("\n> Execution Time Report:")
 
         # Determine the max label width for alignment
-        max_label_length = max(len(label) for label, _ in self.checkpoints) if len(self.checkpoints) > 0 else 0
+        max_label_length = max(len(label) for label, _ in self.checkpoints) if self.checkpoints else 0
 
-        prev_time = self.start_time
-        for label, curr_time in self.checkpoints[1:]:
-            elapsed = curr_time - prev_time
-            print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
-            prev_time = curr_time
-        
-        total_time = self.checkpoints[-1][1] - self.start_time
-        print(f"{'Total Execution Time'.ljust(max_label_length)}: {total_time:.3f} seconds\n")
+        if len(self.checkpoints) > 1:
+            prev_time = self.start_time
+            for label, curr_time in self.checkpoints[1:]:
+                elapsed = curr_time - prev_time
+                print(f"{label.ljust(max_label_length)}: {elapsed:.3f} seconds")
+                prev_time = curr_time
+            
+            total_time = self.checkpoints[-1][1] - self.start_time
+            print(f"{'Total Execution Time'.ljust(max_label_length)}: {total_time:.3f} seconds\n")
 
         self.checkpoints.clear()
 
@@ -384,12 +387,12 @@ class Predictor:
 
     def create_file(self, text: str, directory: str, fileName: str) -> str:
         # Write the text to a file
-        with open(os.path.join(directory, fileName), 'w+', encoding="utf-8") as file:
+        filepath = os.path.join(directory, fileName)
+        with open(filepath, 'w', encoding="utf-8") as file:
             file.write(text)
+        return filepath
 
-        return file.name
-
-    def predict(
+    def predict_from_images(
         self,
         gallery,
         model_repo,
@@ -404,34 +407,36 @@ class Predictor:
         tag_results,
         progress=gr.Progress()
     ):
+        if not gallery:
+             gr.Warning("No images in the gallery to process.")
+             return None, "", "{}", "", "", "", "{}", {}
+        
         gallery_len = len(gallery)
-        print(f"Predict load model: {model_repo}, gallery length: {gallery_len}")
+        print(f"Predict from images: load model: {model_repo}, gallery length: {gallery_len}")
 
         timer = Timer()  # Create a timer
         progressRatio = 0.5 if llama3_reorganize_model_repo else 1
-        progressTotal = gallery_len + 1
+        progressTotal = gallery_len + (1 if llama3_reorganize_model_repo else 0) + 1 # +1 for model load
         current_progress = 0
 
         self.load_model(model_repo)
-        current_progress += progressRatio/progressTotal;
+        current_progress += 1 / progressTotal
         progress(current_progress, desc="Initialize wd model finished")
         timer.checkpoint(f"Initialize wd model")
-
+        
         # Result
         txt_infos = []
         output_dir = tempfile.mkdtemp()
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        
+        last_sorted_general_strings = ""
+        last_classified_tags, last_unclassified_tags = {}, {}
+        last_rating, last_character_res, last_general_res = None, None, None
 
-        sorted_general_strings = ""
-        rating = None
-        character_res = None
-        general_res = None
-
+        llama3_reorganize = None
         if llama3_reorganize_model_repo:
             print(f"Llama3 reorganize load model {llama3_reorganize_model_repo}")
             llama3_reorganize = Llama3Reorganize(llama3_reorganize_model_repo, loadModel=True)
-            current_progress += progressRatio/progressTotal;
+            current_progress += 1 / progressTotal
             progress(current_progress, desc="Initialize llama3 model finished")
             timer.checkpoint(f"Initialize llama3 model")
             
@@ -458,7 +463,7 @@ class Predictor:
 
                 input_name = self.model.get_inputs()[0].name
                 label_name = self.model.get_outputs()[0].name
-                print(f"Gallery {idx:02d}: Starting run wd model...")
+                print(f"Gallery {idx+1}/{gallery_len}: Starting run wd model...")
                 preds = self.model.run([label_name], {input_name: image})[0]
 
                 labels = list(zip(self.tag_names, preds[0].astype(float)))
@@ -473,9 +478,7 @@ class Predictor:
                 if general_mcut_enabled:
                     general_probs = np.array([x[1] for x in general_names])
                     general_thresh = mcut_threshold(general_probs)
-
-                general_res = [x for x in general_names if x[1] > general_thresh]
-                general_res = dict(general_res)
+                general_res = dict([x for x in general_names if x[1] > general_thresh])
 
                 # Everything else is characters: pick any where prediction confidence > threshold
                 character_names = [labels[i] for i in self.character_indexes]
@@ -484,16 +487,10 @@ class Predictor:
                     character_probs = np.array([x[1] for x in character_names])
                     character_thresh = mcut_threshold(character_probs)
                     character_thresh = max(0.15, character_thresh)
-
-                character_res = [x for x in character_names if x[1] > character_thresh]
-                character_res = dict(character_res)
+                character_res = dict([x for x in character_names if x[1] > character_thresh])
                 character_list = list(character_res.keys())
 
-                sorted_general_list = sorted(
-                    general_res.items(),
-                    key=lambda x: x[1],
-                    reverse=True,
-                )
+                sorted_general_list = sorted(general_res.items(), key=lambda x: x[1], reverse=True)
                 sorted_general_list = [x[0] for x in sorted_general_list]
                 #Remove values from character_list that already exist in sorted_general_list
                 character_list = [item for item in character_list if item not in sorted_general_list]
@@ -503,57 +500,181 @@ class Predictor:
                 if append_list:
                     sorted_general_list = [item for item in sorted_general_list if item not in append_list]
 
-                sorted_general_list = prepend_list + sorted_general_list + append_list
+                final_tags_list = prepend_list + sorted_general_list + append_list
+                if characters_merge_enabled:
+                    final_tags_list = character_list + final_tags_list
+                    
+                sorted_general_strings = ", ".join(final_tags_list).replace("(", "\(").replace(")", "\)")
+                classified_tags, unclassified_tags = classify_tags(final_tags_list)
 
-                sorted_general_strings = ", ".join((character_list if characters_merge_enabled else []) + sorted_general_list).replace("(", "\(").replace(")", "\)")
-
-                classified_tags, unclassified_tags = classify_tags(sorted_general_list)
-
-                current_progress += progressRatio/progressTotal;
-                progress(current_progress, desc=f"image{idx:02d}, predict finished")
-                timer.checkpoint(f"image{idx:02d}, predict finished")
+                current_progress += progressRatio / progressTotal
+                progress(current_progress, desc=f"Image {idx+1}/{gallery_len}, predict finished")
+                timer.checkpoint(f"Image {idx+1}/{gallery_len}, predict finished")
                 
-                if llama3_reorganize_model_repo:
+                if llama3_reorganize:
                     print(f"Starting reorganize with llama3...")
                     reorganize_strings = llama3_reorganize.reorganize(sorted_general_strings)
-                    reorganize_strings = re.sub(r" *Title: *", "", reorganize_strings)
-                    reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
-                    reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
-                    sorted_general_strings += "," + reorganize_strings
+                    if reorganize_strings:
+                        reorganize_strings = re.sub(r" *Title: *", "", reorganize_strings)
+                        reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
+                        reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
+                        sorted_general_strings += "," + reorganize_strings
 
-                    current_progress += progressRatio/progressTotal;
-                    progress(current_progress, desc=f"image{idx:02d}, llama3 reorganize finished")
-                    timer.checkpoint(f"image{idx:02d}, llama3 reorganize finished")
+                    current_progress += progressRatio / progressTotal
+                    progress(current_progress, desc=f"Image {idx+1}/{gallery_len}, llama3 reorganize finished")
+                    timer.checkpoint(f"Image {idx+1}/{gallery_len}, llama3 reorganize finished")
 
                 txt_file = self.create_file(sorted_general_strings, output_dir, image_name + ".txt")
-                txt_infos.append({"path":txt_file, "name": image_name + ".txt"})
+                txt_infos.append({"path": txt_file, "name": image_name + ".txt"})
 
                 tag_results[image_path] = { "strings": sorted_general_strings, "classified_tags": classified_tags, "rating": rating, "character_res": character_res, "general_res": general_res, "unclassified_tags": unclassified_tags }
+                
+                # Store last result for UI display
+                last_sorted_general_strings = sorted_general_strings
+                last_classified_tags = classified_tags
+                last_rating = rating
+                last_character_res = character_res
+                last_general_res = general_res
+                last_unclassified_tags = unclassified_tags
                 timer.report()
+
             except Exception as e:
                 print(traceback.format_exc())
-                print("Error predict: " + str(e))
-
+                print("Error predicting image: " + str(e))
+                gr.Warning(f"Failed to process image {os.path.basename(value[0])}. Error: {e}")
+                
         # Result
         download = []
-        if txt_infos is not None and len(txt_infos) > 0:
-            downloadZipPath = os.path.join(output_dir, "images-tagger-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".zip")
+        if txt_infos:
+            zip_filename = "images-tagger-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".zip"
+            downloadZipPath = os.path.join(output_dir, zip_filename)
             with zipfile.ZipFile(downloadZipPath, 'w', zipfile.ZIP_DEFLATED) as taggers_zip:
                 for info in txt_infos:
                     # Get file name from lookup
                     taggers_zip.write(info["path"], arcname=info["name"])
             download.append(downloadZipPath)
             
-        if llama3_reorganize_model_repo:
+        if llama3_reorganize:
             llama3_reorganize.release_vram()
-            del llama3_reorganize
             
-        progress(1, desc=f"Predict completed")
-        timer.report_all()  # Print all recorded times
-        print("Predict is complete.")
+        progress(1, desc="Image processing completed")
+        timer.report_all()
+        print("Image prediction is complete.")
 
-        return download, sorted_general_strings, classified_tags, rating, character_res, general_res, unclassified_tags, tag_results
-    
+        return download, last_sorted_general_strings, last_classified_tags, last_rating, last_character_res, last_general_res, last_unclassified_tags, tag_results
+
+    # NEW: Method to process text files
+    def predict_from_text(
+        self,
+        text_files,
+        llama3_reorganize_model_repo,
+        additional_tags_prepend,
+        additional_tags_append,
+        progress=gr.Progress()
+    ):
+        if not text_files:
+             gr.Warning("No text files uploaded to process.")
+             return None, "", "{}", "", "", "", "{}", {}
+
+        files_len = len(text_files)
+        print(f"Predict from text: processing {files_len} files.")
+
+        timer = Timer()
+        progressRatio = 0.5 if llama3_reorganize_model_repo else 1.0
+        progressTotal = files_len + (1 if llama3_reorganize_model_repo else 0)
+        current_progress = 0
+
+        txt_infos = []
+        output_dir = tempfile.mkdtemp()
+        last_processed_string = ""
+
+        llama3_reorganize = None
+        if llama3_reorganize_model_repo:
+            print(f"Llama3 reorganize load model {llama3_reorganize_model_repo}")
+            llama3_reorganize = Llama3Reorganize(llama3_reorganize_model_repo, loadModel=True)
+            current_progress += 1 / progressTotal
+            progress(current_progress, desc="Initialize llama3 model finished")
+            timer.checkpoint(f"Initialize llama3 model")
+            
+        timer.report()
+
+        prepend_list = [tag.strip() for tag in additional_tags_prepend.split(",") if tag.strip()]
+        append_list = [tag.strip() for tag in additional_tags_append.split(",") if tag.strip()]
+        if prepend_list and append_list:
+            append_list = [item for item in append_list if item not in prepend_list]
+        
+        name_counters = defaultdict(int)
+        for idx, file_obj in enumerate(text_files):
+            try:
+                file_path = file_obj.name
+                file_name_base = os.path.splitext(os.path.basename(file_path))[0]
+                
+                name_counters[file_name_base] += 1
+                if name_counters[file_name_base] > 1:
+                    output_file_name = f"{file_name_base}_{name_counters[file_name_base]:02d}.txt"
+                else:
+                    output_file_name = f"{file_name_base}.txt"
+
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    original_content = f.read()
+
+                # Process tags
+                tags_list = [tag.strip() for tag in original_content.split(',') if tag.strip()]
+                
+                if prepend_list:
+                    tags_list = [item for item in tags_list if item not in prepend_list]
+                if append_list:
+                    tags_list = [item for item in tags_list if item not in append_list]
+
+                final_tags_list = prepend_list + tags_list + append_list
+                processed_string = ", ".join(final_tags_list)
+                
+                current_progress += progressRatio / progressTotal
+                progress(current_progress, desc=f"File {idx+1}/{files_len}, base processing finished")
+                timer.checkpoint(f"File {idx+1}/{files_len}, base processing finished")
+
+                if llama3_reorganize:
+                    print(f"Starting reorganize with llama3...")
+                    reorganize_strings = llama3_reorganize.reorganize(processed_string)
+                    if reorganize_strings:
+                        reorganize_strings = re.sub(r" *Title: *", "", reorganize_strings)
+                        reorganize_strings = re.sub(r"\n+", ",", reorganize_strings)
+                        reorganize_strings = re.sub(r",,+", ",", reorganize_strings)
+                        processed_string += "," + reorganize_strings
+                    
+                    current_progress += progressRatio / progressTotal
+                    progress(current_progress, desc=f"File {idx+1}/{files_len}, llama3 reorganize finished")
+                    timer.checkpoint(f"File {idx+1}/{files_len}, llama3 reorganize finished")
+
+                txt_file_path = self.create_file(processed_string, output_dir, output_file_name)
+                txt_infos.append({"path": txt_file_path, "name": output_file_name})
+                last_processed_string = processed_string
+                timer.report()
+            
+            except Exception as e:
+                print(traceback.format_exc())
+                print("Error processing text file: " + str(e))
+                gr.Warning(f"Failed to process file {os.path.basename(file_obj.name)}. Error: {e}")
+
+        download = []
+        if txt_infos:
+            zip_filename = "texts-processed-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".zip"
+            downloadZipPath = os.path.join(output_dir, zip_filename)
+            with zipfile.ZipFile(downloadZipPath, 'w', zipfile.ZIP_DEFLATED) as processed_zip:
+                for info in txt_infos:
+                    processed_zip.write(info["path"], arcname=info["name"])
+            download.append(downloadZipPath)
+
+        if llama3_reorganize:
+            llama3_reorganize.release_vram()
+
+        progress(1, desc="Text processing completed")
+        timer.report_all()  # Print all recorded times
+        print("Text processing is complete.")
+
+        # Return values in the same structure as the image path, with placeholders for unused outputs
+        return download, last_processed_string, "{}", "", "", "", "{}", {}
+
 def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state: gr.SelectData):
     if not selected_state:
         return selected_state
@@ -590,10 +711,15 @@ def remove_image_from_gallery(gallery: list, selected_image: str):
     if not gallery or not selected_image:
         return gallery
 
-    selected_image = ast.literal_eval(selected_image) #Use ast.literal_eval to parse text into a tuple.
-    # Remove the selected image from the gallery
-    if selected_image in gallery:
-        gallery.remove(selected_image)
+    try:
+        selected_image = ast.literal_eval(selected_image) #Use ast.literal_eval to parse text into a tuple.
+        # Remove the selected image from the gallery
+        if selected_image in gallery:
+            gallery.remove(selected_image)
+    except (ValueError, SyntaxError):
+        # Handle cases where the string is not a valid literal
+        print(f"Warning: Could not parse selected_image string: {selected_image}")
+        
     return gallery
 
 
@@ -605,7 +731,6 @@ def main():
         width: 55.5% !important;
     }
     """
-
     args = parse_args()
 
     predictor = Predictor()
@@ -626,34 +751,93 @@ def main():
         SWINV2_MODEL_IS_DSV1_REPO,
         EVA02_LARGE_MODEL_IS_DSV1_REPO,
     ]
-
+    
     llama_list = [
         META_LLAMA_3_3B_REPO,
         META_LLAMA_3_8B_REPO,
     ]
 
-    with gr.Blocks(title=TITLE, css = css) as demo:
-        gr.Markdown(
-            value=f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>"
-        )
+    # NEW: Wrapper function to decide which prediction method to call
+    def run_prediction(
+        input_type, gallery, text_files, model_repo, general_thresh,
+        general_mcut_enabled, character_thresh, character_mcut_enabled,
+        characters_merge_enabled, llama3_reorganize_model_repo,
+        additional_tags_prepend, additional_tags_append, tag_results, progress=gr.Progress()
+    ):
+        if input_type == 'Image':
+            return predictor.predict_from_images(
+                gallery, model_repo, general_thresh, general_mcut_enabled,
+                character_thresh, character_mcut_enabled, characters_merge_enabled,
+                llama3_reorganize_model_repo, additional_tags_prepend,
+                additional_tags_append, tag_results, progress
+            )
+        else: # 'Text file (.txt)'
+            # For text files, some parameters are not used, but we must return
+            # a tuple of the same size. `predict_from_text` handles this.
+            return predictor.predict_from_text(
+                text_files, llama3_reorganize_model_repo,
+                additional_tags_prepend, additional_tags_append, progress
+            )
+
+    with gr.Blocks(title=TITLE, css=css) as demo:
+        gr.Markdown(f"<h1 style='text-align: center; margin-bottom: 1rem'>{TITLE}</h1>")
         gr.Markdown(value=DESCRIPTION)
+        
         with gr.Row():
             with gr.Column():
                 submit = gr.Button(value="Submit", variant="primary", size="lg")
-                with gr.Column(variant="panel"):
-                    # Create an Image component for uploading images
-                    image_input = gr.Image(label="Upload an Image or clicking paste from clipboard button", type="filepath", sources=["upload", "clipboard"], height=150)
-                    with gr.Row():
-                        upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
-                        remove_button = gr.Button("Remove Selected Image", size="sm")
-                    gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
+                
+                # Input type selector
+                input_type_radio = gr.Radio(
+                    choices=['Image', 'Text file (.txt)'], 
+                    value='Image', 
+                    label="Input Type"
+                )
 
+                # Group for image inputs, initially visible
+                with gr.Column(visible=True) as image_inputs_group:
+                    with gr.Column(variant="panel"):
+                        # Create an Image component for uploading images
+                        image_input = gr.Image(label="Upload an Image or clicking paste from clipboard button", type="filepath", sources=["upload", "clipboard"], height=150)
+                        with gr.Row():
+                            upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
+                            remove_button = gr.Button("Remove Selected Image", size="sm")
+                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
+
+                # NEW: Group for text file inputs, initially hidden
+                with gr.Column(visible=False) as text_inputs_group:
+                    text_files_input = gr.Files(
+                        label="Upload .txt files",
+                        file_types=[".txt"],
+                        file_count="multiple",
+                        height=500
+                    )
+
+                # NEW: Logic to show/hide input groups based on radio selection
+                def change_input_type(input_type):
+                    is_image = (input_type == 'Image')
+                    return {
+                        image_inputs_group: gr.update(visible=is_image),
+                        text_inputs_group: gr.update(visible=not is_image),
+                        # Also update visibility of image-specific settings
+                        model_repo: gr.update(visible=is_image),
+                        general_thresh_row: gr.update(visible=is_image),
+                        character_thresh_row: gr.update(visible=is_image),
+                        characters_merge_enabled: gr.update(visible=is_image),
+                        categorized: gr.update(visible=is_image),
+                        rating: gr.update(visible=is_image),
+                        character_res: gr.update(visible=is_image),
+                        general_res: gr.update(visible=is_image),
+                        unclassified: gr.update(visible=is_image),
+                    }
+
+                # Image-specific settings
                 model_repo = gr.Dropdown(
                     dropdown_list,
                     value=EVA02_LARGE_MODEL_DSV3_REPO,
-                    label="Model",
+                    label="Model (for Images)",
                 )
-                with gr.Row():
+                with gr.Row(visible=True) as general_thresh_row:
                     general_thresh = gr.Slider(
                         0,
                         1,
@@ -667,7 +851,7 @@ def main():
                         label="Use MCut threshold",
                         scale=1,
                     )
-                with gr.Row():
+                with gr.Row(visible=True) as character_thresh_row:
                     character_thresh = gr.Slider(
                         0,
                         1,
@@ -681,18 +865,20 @@ def main():
                         label="Use MCut threshold",
                         scale=1,
                     )
-                with gr.Row():
-                    characters_merge_enabled = gr.Checkbox(
-                        value=True,
-                        label="Merge characters into the string output",
-                        scale=1,
-                    )
+                characters_merge_enabled = gr.Checkbox(
+                    value=True,
+                    label="Merge characters into the string output",
+                    scale=1,
+                    visible=True,
+                )
+                
+                # Common settings
                 with gr.Row():
                     llama3_reorganize_model_repo = gr.Dropdown(
                         [None] + llama_list,
                         value=None,
-                        label="Llama3 Model",
-                        info="Use the Llama3 model to reorganize the article (Note: very slow)",
+                        label="Use the Llama3 model to reorganize the article",
+                        info="(Note: very slow)",
                     )
                 with gr.Row():
                     additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
@@ -701,6 +887,7 @@ def main():
                     clear = gr.ClearButton(
                         components=[
                             gallery,
+                            text_files_input,
                             model_repo,
                             general_thresh,
                             general_mcut_enabled,
@@ -714,14 +901,16 @@ def main():
                         variant="secondary",
                         size="lg",
                     )
+
             with gr.Column(variant="panel"):
                 download_file = gr.File(label="Output (Download)")
-                sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True)
-                categorized = gr.JSON(label="Categorized (tags)")
-                rating = gr.Label(label="Rating")
-                character_res = gr.Label(label="Output (characters)")
-                general_res = gr.Label(label="Output (tags)")
-                unclassified = gr.JSON(label="Unclassified (tags)")
+                sorted_general_strings = gr.Textbox(label="Output (string)", show_label=True, show_copy_button=True, lines=5)
+                # Image-specific outputs
+                categorized = gr.JSON(label="Categorized (tags)", visible=True)
+                rating = gr.Label(label="Rating", visible=True)
+                character_res = gr.Label(label="Output (characters)", visible=True)
+                general_res = gr.Label(label="Output (tags)", visible=True)
+                unclassified = gr.JSON(label="Unclassified (tags)", visible=True)
                 clear.add(
                     [
                         download_file,
@@ -733,35 +922,51 @@ def main():
                         unclassified,
                     ]
                 )
-                
+
             tag_results = gr.State({})
+            selected_image = gr.Textbox(label="Selected Image", visible=False)
+            
+            # Event Listeners
             # Define the event listener to add the uploaded image to the gallery
             image_input.change(append_gallery, inputs=[gallery, image_input], outputs=[gallery, image_input])
             # When the upload button is clicked, add the new images to the gallery
             upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
-            selected_image = gr.Textbox(label="Selected Image", visible=False)
             gallery.select(get_selection_from_gallery, inputs=[gallery, tag_results], outputs=[selected_image, sorted_general_strings, categorized, rating, character_res, general_res, unclassified])
             # Event to remove a selected image from the gallery
             remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
+            
+            # Connect the radio button to the visibility function
+            input_type_radio.change(
+                fn=change_input_type,
+                inputs=input_type_radio,
+                outputs=[
+                    image_inputs_group, text_inputs_group, model_repo,
+                    general_thresh_row, character_thresh_row, characters_merge_enabled,
+                    categorized, rating, character_res, general_res, unclassified
+                ]
+            )
 
-        submit.click(
-            predictor.predict,
-            inputs=[
-                gallery,
-                model_repo,
-                general_thresh,
-                general_mcut_enabled,
-                character_thresh,
-                character_mcut_enabled,
-                characters_merge_enabled,
-                llama3_reorganize_model_repo,
-                additional_tags_prepend,
-                additional_tags_append,
-                tag_results,
-            ],
-            outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results,],
-        )
+            # submit click now calls the wrapper function
+            submit.click(
+                fn=run_prediction,
+                inputs=[
+                    input_type_radio,
+                    gallery,
+                    text_files_input,
+                    model_repo,
+                    general_thresh,
+                    general_mcut_enabled,
+                    character_thresh,
+                    character_mcut_enabled,
+                    characters_merge_enabled,
+                    llama3_reorganize_model_repo,
+                    additional_tags_prepend,
+                    additional_tags_append,
+                    tag_results,
+                ],
+                outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results,],
+            )
         
         gr.Examples(
             [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]], 
