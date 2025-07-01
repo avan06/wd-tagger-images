@@ -869,8 +869,9 @@ def main():
                     additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
                     additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
                 
-                # NEW: Add the remove tags input box
-                tags_to_remove = gr.Text(label="Remove tags (comma split)")
+                # Add the remove tags input box
+                with gr.Row():
+                    tags_to_remove = gr.Text(label="Remove tags (comma split)")
                 
                 with gr.Row():
                     clear = gr.ClearButton(
