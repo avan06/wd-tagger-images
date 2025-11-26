@@ -531,9 +531,19 @@ class Predictor:
 
                 tag_results[image_path] = { "strings": sorted_general_strings, "classified_tags": classified_tags, "rating": rating, "character_res": character_res, "general_res": general_res, "unclassified_tags": unclassified_tags }
 
+                # Merge Unclassified into Classified for frontend display
+                display_classified = classified_tags.copy()
+                if unclassified_tags:
+                    # If it is a list (common case), put it into the "Unclassified" category
+                    if isinstance(unclassified_tags, list):
+                        display_classified["Unclassified"] = unclassified_tags
+                    # Just to be safe, if it is a dict, use update
+                    elif isinstance(unclassified_tags, dict):
+                        display_classified.update(unclassified_tags)
+
                 # Store last result for UI display
                 last_sorted_general_strings = sorted_general_strings
-                last_classified_tags = classified_tags
+                last_classified_tags = display_classified # Use the merged result
                 last_rating = rating
                 last_character_res = character_res
                 last_general_res = general_res
@@ -703,10 +713,32 @@ def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state:
     if not selected_state:
         return selected_state
 
+    # Default unclassified_tags to list (because classifyTags usually returns a list)
     tag_result = tag_results.get(selected_state.value["image"]["path"],
-                                {"strings": "", "classified_tags": "{}", "rating": "", "character_res": "", "general_res": "", "unclassified_tags": "{}"})
+                                {"strings": "", "classified_tags": {}, "rating": "", "character_res": "", "general_res": "", "unclassified_tags": []})
 
-    return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], tag_result["classified_tags"], tag_result["rating"], tag_result["character_res"], tag_result["general_res"], tag_result["unclassified_tags"]
+    # Retrieve original data
+    c_tags = tag_result["classified_tags"]
+    u_tags = tag_result["unclassified_tags"]
+
+    # Error handling: Ensure correct types
+    if isinstance(c_tags, str): 
+        try: c_tags = ast.literal_eval(c_tags)
+        except: c_tags = {}
+    if isinstance(u_tags, str): 
+        try: u_tags = ast.literal_eval(u_tags)
+        except: u_tags = []
+
+    # Merge: Copy Classified, and append Unclassified if it exists
+    display_classified = c_tags.copy() if isinstance(c_tags, dict) else {}
+    
+    if u_tags:
+        if isinstance(u_tags, list):
+            display_classified["Unclassified"] = u_tags
+        elif isinstance(u_tags, dict):
+            display_classified.update(u_tags)
+
+    return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], display_classified, tag_result["rating"], tag_result["character_res"], tag_result["general_res"], tag_result["unclassified_tags"]
 
 def append_gallery(gallery: list, image: str):
     if gallery is None:
@@ -764,6 +796,10 @@ def main():
     textarea[rows]:not([rows="1"])::-webkit-scrollbar-thumb {
         all: initial !important;
         background: #a8a8a8 !important;
+    }
+    /* Make the Dropdown options display more compactly */
+    .tag-dropdown span.svelte-1f354aw {
+        font-family: monospace;
     }
     """
     args = parse_args()
@@ -838,7 +874,7 @@ def main():
                         with gr.Row():
                             upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
                             remove_button = gr.Button("Remove Selected Image", size="sm")
-                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height="500px", label="Gallery that displaying a grid of images")
+                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height=500, label="Gallery that displaying a grid of images")
 
                 # Group for text file inputs, initially hidden
                 with gr.Column(visible=False) as text_inputs_group:
@@ -901,7 +937,7 @@ def main():
                 with gr.Row():
                     additional_tags_prepend = gr.Text(label="Prepend Additional tags (comma split)")
                     additional_tags_append  = gr.Text(label="Append Additional tags (comma split)")
-                    
+                
                 # Add the remove tags input box
                 with gr.Row():
                     tags_to_remove = gr.Text(label="Remove tags (comma split)")
@@ -930,14 +966,60 @@ def main():
                 download_file = gr.File(label="Output (Download)")
                 sorted_general_strings = gr.Textbox(label="Output (string for last processed item)", show_label=True, show_copy_button=True, lines=5)
                 
-                with gr.Accordion("Categorized (tags)", open=False):
-                    categorized = gr.JSON(label="Categorized")
-                    
+                # Use State to store categorized data
+                categorized_state = gr.State({})
+                
+                # Wrap the dynamically rendered area with Accordion
+                with gr.Accordion("Categorized (tags) - Interactive", open=False) as categorized_accordion:
+                    # Use @gr.render to dynamically generate UI based on the content of categorized_state
+                    @gr.render(inputs=categorized_state)
+                    def render_categorized_tags(categories_data):
+                        if not categories_data:
+                            gr.Markdown("No categorized tags to display yet.")
+                            return
+                        
+                        for category_name, tags_list in categories_data.items():
+                            # Ensure tags_list is of type list
+                            current_tags = tags_list if isinstance(tags_list, list) else str(tags_list).split(',')
+                            current_tags = [t.strip() for t in current_tags if t.strip()]
+
+                            with gr.Group():
+                                with gr.Row(variant="compact", equal_height=True):
+                                    # 1. Multiselect Dropdown (Main editing area)
+                                    dd = gr.Dropdown(
+                                        choices=current_tags,     # Default choices are the current tags
+                                        value=current_tags,       #  Default value are the current tags
+                                        label=f"{category_name} ({len(current_tags)})",
+                                        multiselect=True,         # Enable multiselect (shows X button)
+                                        allow_custom_value=True,  # Allow custom values (add new tags)
+                                        interactive=True,
+                                        scale=5,
+                                        elem_classes=["tag-dropdown"]
+                                    )
+                                    
+                                    # 2. Read-only Textbox (Used to provide a copy button)
+                                    # Since Dropdown cannot directly copy raw strings, we use this Textbox to "sync display" the string
+                                    txt_copy = gr.Textbox(
+                                        value=", ".join(current_tags),
+                                        label="Copy String",
+                                        show_copy_button=True, # Copy button is here
+                                        interactive=False,     # Disable manual editing, only sync from Dropdown
+                                        scale=1,
+                                        min_width=100,
+                                        max_lines=1
+                                    )
+
+                                # 3. Event binding: Update Textbox when Dropdown changes
+                                def sync_tags_to_text(selected_tags):
+                                    return ", ".join(selected_tags)
+
+                                dd.change(fn=sync_tags_to_text, inputs=dd, outputs=txt_copy)
+
                 with gr.Accordion("Detailed Output (for last processed item)", open=False):
                     rating = gr.Label(label="Rating", visible=True)
                     character_res = gr.Label(label="Output (characters)", visible=True)
                     general_res = gr.Label(label="Output (tags)", visible=True)
-                    unclassified = gr.JSON(label="Unclassified (tags)", visible=True)
+                    unclassified = gr.JSON(label="Unclassified (tags)", visible=False)
                 
                 with gr.Accordion("Tags Statistics (All files)", open=False):
                     tags_statistics = gr.Text(
@@ -952,7 +1034,7 @@ def main():
                     [
                         download_file,
                         sorted_general_strings,
-                        categorized,
+                        categorized_state,
                         rating,
                         character_res,
                         general_res,
@@ -970,7 +1052,11 @@ def main():
             # When the upload button is clicked, add the new images to the gallery
             upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
-            gallery.select(get_selection_from_gallery, inputs=[gallery, tag_results], outputs=[selected_image, sorted_general_strings, categorized, rating, character_res, general_res, unclassified])
+            gallery.select(
+                get_selection_from_gallery, 
+                inputs=[gallery, tag_results], 
+                outputs=[selected_image, sorted_general_strings, categorized_state, rating, character_res, general_res, unclassified]
+            )
             # Event to remove a selected image from the gallery
             remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
 
@@ -985,7 +1071,8 @@ def main():
                     general_thresh_row: gr.update(visible=is_image),
                     character_thresh_row: gr.update(visible=is_image),
                     characters_merge_enabled: gr.update(visible=is_image),
-                    categorized: gr.update(visible=is_image),
+                    # Update visibility of categorized_accordion
+                    categorized_accordion: gr.update(visible=is_image),
                     rating: gr.update(visible=is_image),
                     character_res: gr.update(visible=is_image),
                     general_res: gr.update(visible=is_image),
@@ -999,7 +1086,7 @@ def main():
                 outputs=[
                     image_inputs_group, text_inputs_group, model_repo,
                     general_thresh_row, character_thresh_row, characters_merge_enabled,
-                    categorized, rating, character_res, general_res, unclassified
+                    categorized_accordion, rating, character_res, general_res, unclassified
                 ]
             )
 
@@ -1022,7 +1109,7 @@ def main():
                     tags_to_remove,
                     tag_results,
                 ],
-                outputs=[download_file, sorted_general_strings, categorized, rating, character_res, general_res, unclassified, tag_results, tags_statistics],
+                outputs=[download_file, sorted_general_strings, categorized_state, rating, character_res, general_res, unclassified, tag_results, tags_statistics],
             )
 
         gr.Examples(
