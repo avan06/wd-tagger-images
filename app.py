@@ -740,42 +740,6 @@ def get_selection_from_gallery(gallery: list, tag_results: dict, selected_state:
 
     return (selected_state.value["image"]["path"], selected_state.value["caption"]), tag_result["strings"], display_classified, tag_result["rating"], tag_result["character_res"], tag_result["general_res"], tag_result["unclassified_tags"]
 
-def append_gallery(gallery: list, image: str):
-    if gallery is None:
-        gallery = []
-    if not image:
-        return gallery, None
-
-    gallery.append(image)
-
-    return gallery, None
-
-
-def extend_gallery(gallery: list, images):
-    if gallery is None:
-        gallery = []
-    if not images:
-        return gallery
-
-    # Combine the new images with the existing gallery images
-    gallery.extend(images)
-
-    return gallery
-
-def remove_image_from_gallery(gallery: list, selected_image: str):
-    if not gallery or not selected_image:
-        return gallery
-
-    try:
-        selected_image_tuple = ast.literal_eval(selected_image) #Use ast.literal_eval to parse text into a tuple.
-        # Remove the selected image from the gallery
-        if selected_image_tuple in gallery:
-            gallery.remove(selected_image_tuple)
-    except (ValueError, SyntaxError):
-        # Handle cases where the string is not a valid literal
-        print(f"Warning: Could not parse selected_image string: {selected_image}")
-
-    return gallery
 
 
 def main():
@@ -801,7 +765,71 @@ def main():
     .tag-dropdown span.svelte-1f354aw {
         font-family: monospace;
     }
+    /* Add hover effect to Gallery to indicate it is an interactive area */
+    #input_gallery:hover {
+        border-color: var(--color-accent) !important;
+        box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
     """
+    
+    # JavaScript to handle Ctrl+V paste for MULTIPLE files ONLY when hovering over the gallery
+    paste_js = """
+    function initPaste() {
+        document.addEventListener('paste', function(e) {
+            // 1. First find the Gallery component
+            const gallery = document.getElementById('input_gallery');
+            if (!gallery) return;
+            
+            // 2. Check if mouse is hovering over the Gallery
+            // If mouse is not over the gallery, ignore this paste event
+            if (!gallery.matches(':hover')) {
+                return;
+            }
+
+            const clipboardData = e.clipboardData || e.originalEvent.clipboardData;
+            if (!clipboardData) return;
+
+            const items = clipboardData.items;
+            const files = [];
+
+            // 3. Check clipboard content
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].kind === 'file' && items[i].type.startsWith('image/')) {
+                    files.push(items[i].getAsFile());
+                }
+            }
+            
+            // 4. Check file list (Copied files from OS)
+            if (files.length === 0 && clipboardData.files.length > 0) {
+                 for (let i = 0; i < clipboardData.files.length; i++) {
+                    if (clipboardData.files[i].type.startsWith('image/')) {
+                        files.push(clipboardData.files[i]);
+                    }
+                }
+            }
+
+            if (files.length === 0) return;
+            
+            // 5. Execute upload logic
+            // Find input inside the gallery component
+            const uploadInput = gallery.querySelector('input[type="file"]');
+            
+            if (uploadInput) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const dataTransfer = new DataTransfer();
+                files.forEach(file => dataTransfer.items.add(file));
+                
+                uploadInput.files = dataTransfer.files;
+
+                // Trigger Gradio update
+                uploadInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        });
+    }
+    """
+
     args = parse_args()
 
     predictor = Predictor()
@@ -859,24 +887,28 @@ def main():
             with gr.Column():
                 submit = gr.Button(value="Submit", variant="primary", size="lg")
 
-                # Input type selector
-                input_type_radio = gr.Radio(
-                    choices=['Image', 'Text file (.txt)'],
-                    value='Image',
-                    label="Input Type"
-                )
-
                 # Group for image inputs, initially visible
                 with gr.Column(visible=True) as image_inputs_group:
                     with gr.Column(variant="panel"):
-                        # Create an Image component for uploading images
-                        image_input = gr.Image(label="Upload an Image or clicking paste from clipboard button", type="filepath", sources=["upload", "clipboard"], height=150)
-                        with gr.Row():
-                            upload_button = gr.UploadButton("Upload multiple images", file_types=["image"], file_count="multiple", size="sm")
-                            remove_button = gr.Button("Remove Selected Image", size="sm")
-                        gallery = gr.Gallery(columns=5, rows=5, show_share_button=False, interactive=True, height=500, label="Gallery that displaying a grid of images")
+                        gallery = gr.Gallery(
+                            columns=5, 
+                            rows=5, 
+                            show_share_button=False, 
+                            interactive=True, 
+                            height=500, 
+                            label="Image Gallery (Drag multiple images here)",
+                            elem_id="input_gallery",
+                        )
+                        gr.Markdown(
+                            """
+                            <div style="text-align: right; font-size: 0.9em; color: gray;">
+                            💡 Tip: Press <b>Ctrl+V</b> anywhere to paste images directly into the gallery.
+                            </div>
+                            """
+                        )
+                            
 
-                # Group for text file inputs, initially hidden
+                # 2. Define text input area (default hidden)
                 with gr.Column(visible=False) as text_inputs_group:
                     text_files_input = gr.Files(
                         label="Upload .txt files",
@@ -884,6 +916,14 @@ def main():
                         file_count="multiple",
                         height=500
                     )
+                    
+                # 3. Define Input Type selector
+                input_type_radio = gr.Radio(
+                    choices=['Image', 'Text file (.txt)'],
+                    value='Image',
+                    label="Input Mode", 
+                    info="Select whether to process images or text files"
+                )
 
                 # Image-specific settings
                 model_repo = gr.Dropdown(
@@ -1047,18 +1087,12 @@ def main():
             selected_image = gr.Textbox(label="Selected Image", visible=False)
 
             # Event Listeners
-            # Define the event listener to add the uploaded image to the gallery
-            image_input.change(append_gallery, inputs=[gallery, image_input], outputs=[gallery, image_input])
-            # When the upload button is clicked, add the new images to the gallery
-            upload_button.upload(extend_gallery, inputs=[gallery, upload_button], outputs=gallery)
             # Event to update the selected image when an image is clicked in the gallery
             gallery.select(
                 get_selection_from_gallery, 
                 inputs=[gallery, tag_results], 
                 outputs=[selected_image, sorted_general_strings, categorized_state, rating, character_res, general_res, unclassified]
             )
-            # Event to remove a selected image from the gallery
-            remove_button.click(remove_image_from_gallery, inputs=[gallery, selected_image], outputs=gallery)
 
             # Logic to show/hide input groups based on radio selection
             def change_input_type(input_type):
@@ -1113,9 +1147,9 @@ def main():
             )
 
         gr.Examples(
-            [["power.jpg", SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
+            [[["power.jpg"], SWINV2_MODEL_DSV3_REPO, 0.35, False, 0.85, False]],
             inputs=[
-                image_input,
+                gallery,
                 model_repo,
                 general_thresh,
                 general_mcut_enabled,
@@ -1123,6 +1157,10 @@ def main():
                 character_mcut_enabled,
             ],
         )
+        
+        # Load the JavaScript
+        demo.load(None, None, None, js=paste_js)
+        
 
     demo.queue(max_size=2)
     demo.launch(inbrowser=True)
