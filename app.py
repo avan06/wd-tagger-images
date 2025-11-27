@@ -902,7 +902,7 @@ def main():
                         gr.Markdown(
                             """
                             <div style="text-align: right; font-size: 0.9em; color: gray;">
-                            💡 Tip: Press <b>Ctrl+V</b> anywhere to paste images directly into the gallery.
+                            💡 Tip: Hover over the gallery and press <b>Ctrl+V</b> to paste images.
                             </div>
                             """
                         )
